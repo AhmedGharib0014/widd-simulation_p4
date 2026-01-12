@@ -610,3 +610,44 @@ if __name__ == '__main__':
                 print(f"    {k}: {v}")
         else:
             print(f"  {key}: {value}")
+
+    # Check for --server flag to start in server mode
+    import argparse
+    parser = argparse.ArgumentParser(description='WIDD OODA Controller')
+    parser.add_argument('--server', '-s', action='store_true',
+                        help='Start in server mode (listen for attack CLI connections)')
+    args, _ = parser.parse_known_args()
+
+    if args.server or '--server' in sys.argv:
+        print("\n" + "="*60)
+        print("  SERVER MODE")
+        print("  Listening for attack CLI connections on port 9999...")
+        print("  Press Ctrl+C to stop")
+        print("="*60 + "\n")
+
+        from controller.simulation_server import SimulationServer
+
+        # Reset controller for fresh demo
+        controller = OODAController()
+        controller.set_network_info('WIDD_Network', '00:11:22:33:44:55')
+        controller.register_client('00:00:00:00:00:01', base_rssi=-45)
+        controller.register_client('00:00:00:00:00:02', base_rssi=-55)
+        controller.mocc.register_device('00:00:00:00:00:99', base_rssi=-70)
+
+        # Train MOCC
+        for i in range(100):
+            controller.simulate_frame('data', '00:00:00:00:00:01')
+
+        logger.system_info("Controller ready - MOCC trained, waiting for attacks...")
+
+        # Start server
+        server = SimulationServer(controller)
+        server.start()
+
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("\n")
+            logger.print_stats()
+            server.stop()
