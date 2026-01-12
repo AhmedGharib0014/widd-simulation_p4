@@ -23,6 +23,7 @@ from controller.switch_interface import SwitchInterface, PacketInEvent, CPU_REAS
     CPU_REASON_AUTH, CPU_REASON_ASSOC, CPU_REASON_BEACON, CPU_REASON_DISASSOC, CPU_REASON_DATA
 from controller.mocc import MOCC, RFFeatures
 from controller.kcsm import KCSMManager, AttackType
+from controller.logger import logger, WIDDLogger
 
 
 # Ethernet header size
@@ -114,21 +115,22 @@ class OODAController:
         """Register a legitimate client device."""
         self.mocc.register_device(mac_address, base_rssi)
         self.known_clients[mac_address] = True
-        print(f"[OODA] Registered client: {mac_address}")
+        logger.system_info(f"Registered client: {mac_address} (RSSI={base_rssi}dBm)")
 
     def set_network_info(self, ssid: str, bssid: str):
         """Set network SSID and BSSID for evil twin detection."""
         self.ssid = ssid
         self.bssid = bssid
         self.kcsm.set_network_info(ssid, bssid)
-        print(f"[OODA] Network: SSID={ssid}, BSSID={bssid}")
+        logger.system_info(f"Network configured: SSID={ssid}, BSSID={bssid}")
 
     def start(self):
         """Start the OODA loop (connect and listen for packets)."""
-        print("[OODA] Starting controller...")
+        logger.print_banner()
+        logger.system_start("OODA Controller")
 
         if not self.switch.connect():
-            print("[OODA] Failed to connect to switch")
+            logger.system_error("SWITCH", "Failed to connect to bmv2 switch")
             return False
 
         self.running = True
@@ -137,12 +139,13 @@ class OODAController:
         if self.switch.cpu_iface:
             self.switch.start_packet_in_listener(self._handle_packet_in)
 
-        print("[OODA] Controller started")
+        logger.system_info("Controller ready - waiting for packets")
         return True
 
     def stop(self):
         """Stop the OODA loop."""
-        print("[OODA] Stopping controller...")
+        logger.system_stop("OODA Controller")
+        logger.print_stats()
         self.running = False
         self.switch.disconnect()
 
@@ -256,24 +259,45 @@ class OODAController:
         self.stats['deauth_frames'] += 1
         source_mac = frame.addr2
 
-        print(f"[OODA] DEAUTH from {source_mac}, RSSI={rf_features.rssi}")
+        # === OBSERVE (already done in _handle_packet_in) ===
+        logger.ooda_observe("DEAUTH", source_mac, {
+            'rssi': rf_features.rssi,
+            'phase': rf_features.phase_offset
+        })
 
-        # ORIENTATE: Check device identity using MOCC
+        # === ORIENT: Check device identity using MOCC ===
         prob, is_legitimate = self.mocc.identify(source_mac, rf_features)
-        print(f"[OODA]   MOCC: prob={prob:.2%}, legitimate={is_legitimate}")
+        logger.ooda_orient_mocc(source_mac, prob, is_legitimate)
 
-        # DECIDE: Update KCSM state machine
+        # Log attack detection at ORIENT phase
+        if not is_legitimate:
+            logger.attack_deauth(
+                src_mac="UNKNOWN",
+                target_mac=source_mac,
+                spoofed=True,
+                count=self.stats['deauth_frames']
+            )
+
+        # === DECIDE: Update KCSM state machine ===
         attack, should_drop = self.kcsm.process_deauth(source_mac, is_legitimate)
 
-        # ACT: Take action based on decision
+        # Get KCSM state for logging
+        kcsm_state = self.kcsm.deauth_kcsm.get_client(source_mac).deauth_state
+        logger.ooda_decide_kcsm(
+            "DEAUTH", source_mac, kcsm_state,
+            attack != AttackType.NONE,
+            attack.name if attack != AttackType.NONE else None
+        )
+
+        # === ACT: Take action based on decision ===
         if should_drop:
             self.stats['deauth_dropped'] += 1
-            print(f"[OODA]   ACTION: DROP (spoofed frame)")
-            # Frame is already dropped by P4 (not forwarded)
+            logger.ooda_decide_drop("Spoofed deauth (MOCC failed)", source_mac)
+        else:
+            logger.ooda_decide_pass(source_mac)
 
         if attack != AttackType.NONE:
             self.stats['attacks_detected'] += 1
-            print(f"[OODA]   ATTACK DETECTED: {attack.name}")
 
             # Trigger countermeasures
             if self.on_attack_detected:
@@ -281,36 +305,63 @@ class OODAController:
 
             # Countermeasure: Inject false handshake
             self._inject_false_handshake(source_mac)
+            logger.ooda_act_countermeasure(
+                "INJECT_FALSE_HANDSHAKE",
+                source_mac,
+                "Poisoning attacker capture file"
+            )
+            logger.ooda_act_alert(
+                attack.name,
+                f"Client {source_mac} under deauth attack - countermeasures active"
+            )
 
     def _process_disassoc(self, frame: ParsedFrame, rf_features: RFFeatures):
         """Process disassociation frame."""
         source_mac = frame.addr2
 
+        logger.ooda_observe("DISASSOC", source_mac, {'rssi': rf_features.rssi})
+
         prob, is_legitimate = self.mocc.identify(source_mac, rf_features)
+        logger.ooda_orient_mocc(source_mac, prob, is_legitimate)
+
         attack, should_drop = self.kcsm.process_disassoc(source_mac, is_legitimate)
+
+        if should_drop:
+            logger.ooda_decide_drop("Spoofed disassoc (MOCC failed)", source_mac)
+        else:
+            logger.ooda_decide_pass(source_mac)
 
         if attack != AttackType.NONE:
             self.stats['attacks_detected'] += 1
+            logger.ooda_decide_kcsm("DISASSOC", source_mac, 3, True, attack.name)
             if self.on_attack_detected:
                 self.on_attack_detected(attack, source_mac)
 
     def _process_auth(self, frame: ParsedFrame):
         """Process authentication frame (flood detection)."""
+        logger.ooda_observe("AUTH", frame.addr2)
+
         attack = self.kcsm.process_auth()
+        auth_count = self.kcsm.auth_flood_kcsm.auth_count
 
         if attack != AttackType.NONE:
             self.stats['attacks_detected'] += 1
-            print(f"[OODA] AUTH FLOOD detected")
+            logger.attack_flood("AUTH", auth_count, 10)
+            logger.ooda_act_alert("AUTH_FLOOD", f"Flood detected: {auth_count} auth frames")
             if self.on_attack_detected:
                 self.on_attack_detected(attack, frame.addr2)
 
     def _process_assoc(self, frame: ParsedFrame):
         """Process association frame (flood detection)."""
+        logger.ooda_observe("ASSOC", frame.addr2)
+
         attack = self.kcsm.process_assoc()
+        assoc_count = self.kcsm.assoc_flood_kcsm.assoc_count
 
         if attack != AttackType.NONE:
             self.stats['attacks_detected'] += 1
-            print(f"[OODA] ASSOC FLOOD detected")
+            logger.attack_flood("ASSOC", assoc_count, 10)
+            logger.ooda_act_alert("ASSOC_FLOOD", f"Flood detected: {assoc_count} assoc frames")
             if self.on_attack_detected:
                 self.on_attack_detected(attack, frame.addr2)
 
@@ -320,11 +371,14 @@ class OODAController:
         # For simulation, we use addr3 as BSSID
         beacon_bssid = frame.addr3
 
+        logger.ooda_observe("BEACON", beacon_bssid)
+
         attack = self.kcsm.process_beacon(self.ssid, beacon_bssid)
 
         if attack != AttackType.NONE:
             self.stats['attacks_detected'] += 1
-            print(f"[OODA] EVIL TWIN detected: rogue BSSID={beacon_bssid}")
+            logger.attack_evil_twin(self.ssid, self.bssid or "UNKNOWN", beacon_bssid)
+            logger.ooda_act_alert("EVIL_TWIN", f"Rogue AP detected with BSSID={beacon_bssid}")
             if self.on_attack_detected:
                 self.on_attack_detected(attack, beacon_bssid)
 
@@ -335,6 +389,11 @@ class OODAController:
         # Train MOCC with this frame's RF features
         self.mocc.train(source_mac, rf_features)
 
+        # Log training progress
+        status = self.mocc.get_training_status(source_mac)
+        if status['samples'] % 50 == 0:  # Log every 50 samples
+            logger.ooda_orient_training(source_mac, status['samples'], status['trained'])
+
     def _inject_false_handshake(self, target_mac: str):
         """
         Inject false 4-way handshake to poison attacker's capture.
@@ -343,9 +402,8 @@ class OODAController:
         is detected, we send fake authentication frames so the attacker
         captures invalid credentials.
         """
-        print(f"[OODA] COUNTERMEASURE: Injecting false handshake for {target_mac}")
         # TODO: Implement actual packet injection via CPU port
-        # For now, just log the action
+        # For now, the logging is done in the caller
 
     def get_stats(self) -> Dict:
         """Get controller statistics."""
@@ -361,81 +419,194 @@ class OODAController:
         Simulate receiving a frame (for testing without actual network).
 
         Args:
-            frame_type: 'deauth', 'auth', 'assoc', 'data'
+            frame_type: 'deauth', 'auth', 'assoc', 'data', 'beacon'
             source_mac: Actual source MAC
             is_spoofed: Whether this is a spoofed frame
             spoofed_mac: MAC being spoofed (if is_spoofed)
         """
-        # Generate RF features
+        # Generate RF features from the ACTUAL source (attacker's real RF signature)
         rf_features = self.mocc.simulate_rf_features(source_mac)
 
-        # Create mock parsed frame
+        # The claimed MAC is what appears in the frame header
         claimed_mac = spoofed_mac if is_spoofed else source_mac
 
         if frame_type == 'deauth':
             self.stats['deauth_frames'] += 1
 
-            # ORIENTATE
+            # Log packet arrival from "switch"
+            logger.switch_packet_in("DEAUTH", claimed_mac, "ff:ff:ff:ff:ff:ff",
+                                     port=1, rssi=rf_features.rssi)
+
+            # === OBSERVE ===
+            logger.ooda_observe("DEAUTH", claimed_mac, {'rssi': rf_features.rssi})
+
+            # === ORIENT: MOCC identification ===
+            # MOCC compares the RF features against the claimed MAC's signature
             prob, is_legitimate = self.mocc.identify(claimed_mac, rf_features)
-            print(f"[SIM] DEAUTH claimed={claimed_mac}, actual={source_mac}")
-            print(f"[SIM]   MOCC: prob={prob:.2%}, legitimate={is_legitimate}")
+            logger.ooda_orient_mocc(claimed_mac, prob, is_legitimate)
 
-            # DECIDE
+            if is_spoofed:
+                logger.attack_deauth(source_mac, claimed_mac, True, self.stats['deauth_frames'])
+
+            # === DECIDE: KCSM state machine ===
             attack, should_drop = self.kcsm.process_deauth(claimed_mac, is_legitimate)
+            kcsm_state = self.kcsm.deauth_kcsm.get_client(claimed_mac).deauth_state
+            logger.ooda_decide_kcsm("DEAUTH", claimed_mac, kcsm_state,
+                                     attack != AttackType.NONE,
+                                     attack.name if attack != AttackType.NONE else None)
 
-            # ACT
+            # === ACT ===
             if should_drop:
                 self.stats['deauth_dropped'] += 1
-                print(f"[SIM]   ACTION: DROP")
+                logger.ooda_decide_drop("Spoofed frame (RF mismatch)", claimed_mac)
+            else:
+                logger.ooda_decide_pass(claimed_mac)
 
             if attack != AttackType.NONE:
                 self.stats['attacks_detected'] += 1
-                print(f"[SIM]   ATTACK: {attack.name}")
+                logger.ooda_act_countermeasure("INJECT_FALSE_HANDSHAKE", claimed_mac,
+                                                "Poisoning attacker capture")
+                logger.ooda_act_alert(attack.name,
+                                       f"Client {claimed_mac} under attack from {source_mac}")
 
             return (attack, should_drop, prob)
 
         elif frame_type == 'data':
+            # Data frames are used for MOCC training
+            logger.switch_packet_in("DATA", source_mac, "ff:ff:ff:ff:ff:ff",
+                                     port=1, rssi=rf_features.rssi)
             self.mocc.train(source_mac, rf_features)
-            print(f"[SIM] DATA from {source_mac} - trained MOCC")
+
+            status = self.mocc.get_training_status(source_mac)
+            if status['samples'] % 50 == 0:
+                logger.ooda_orient_training(source_mac, status['samples'], status['trained'])
+
             return (AttackType.NONE, False, 1.0)
+
+        elif frame_type == 'beacon':
+            # Beacon frame for evil twin detection
+            logger.switch_packet_in("BEACON", source_mac, "ff:ff:ff:ff:ff:ff",
+                                     port=1, rssi=rf_features.rssi)
+            logger.ooda_observe("BEACON", source_mac)
+
+            attack = self.kcsm.process_beacon(self.ssid, source_mac)
+            if attack != AttackType.NONE:
+                self.stats['attacks_detected'] += 1
+                logger.attack_evil_twin(self.ssid, self.bssid or "UNKNOWN", source_mac)
+
+            return (attack, False, 1.0)
+
+        elif frame_type == 'auth':
+            logger.switch_packet_in("AUTH", source_mac, "ff:ff:ff:ff:ff:ff",
+                                     port=1, rssi=rf_features.rssi)
+            logger.ooda_observe("AUTH", source_mac)
+
+            attack = self.kcsm.process_auth()
+            if attack != AttackType.NONE:
+                self.stats['attacks_detected'] += 1
+                logger.attack_flood("AUTH", self.kcsm.auth_flood_kcsm.auth_count, 10)
+
+            return (attack, False, 1.0)
 
 
 # Test the controller
 if __name__ == '__main__':
-    print("Testing OODA Controller in simulation mode...\n")
+    import time
 
+    # Create controller and print banner
     controller = OODAController()
+    logger.print_banner()
+    logger.system_start("OODA Controller")
+
+    # Configure network
+    controller.set_network_info('WIDD_Network', '00:11:22:33:44:55')
 
     # Register legitimate clients
+    print("\n" + "="*60)
+    print("  PHASE 1: DEVICE REGISTRATION")
+    print("="*60)
     controller.register_client('00:00:00:00:00:01', base_rssi=-45)
     controller.register_client('00:00:00:00:00:02', base_rssi=-55)
 
     # Register attacker (different RF characteristics)
-    controller.mocc.register_device('00:00:00:00:00:99', base_rssi=-60)
+    controller.mocc.register_device('00:00:00:00:00:99', base_rssi=-70)
+    logger.system_info("Attacker device registered: 00:00:00:00:00:99 (RSSI=-70dBm)")
 
-    # Simulate training phase with data frames
-    print("\n--- Training Phase (100 data frames from sta1) ---")
+    # Training phase
+    print("\n" + "="*60)
+    print("  PHASE 2: MOCC TRAINING (100 data frames from sta1)")
+    print("="*60)
     for i in range(100):
         controller.simulate_frame('data', '00:00:00:00:00:01')
+    print()
 
     # Test 1: Legitimate deauth
-    print("\n--- Test 1: Legitimate deauth from sta1 ---")
+    print("\n" + "="*60)
+    print("  TEST 1: Legitimate deauth from sta1")
+    print("  Expected: PASS (RF matches trained signature)")
+    print("="*60)
+    time.sleep(0.5)
     controller.simulate_frame('deauth', '00:00:00:00:00:01')
 
+    # Wait for KCSM timeout
+    print("\n  [Waiting 2.5s for KCSM timeout reset...]")
+    time.sleep(2.5)
+
     # Test 2: Spoofed deauth (attacker pretending to be sta1)
-    print("\n--- Test 2: Spoofed deauth (attacker -> sta1) ---")
+    print("\n" + "="*60)
+    print("  TEST 2: SPOOFED deauth (attacker claiming to be sta1)")
+    print("  Expected: DROP (RF doesn't match sta1's signature)")
+    print("="*60)
+    time.sleep(0.5)
     controller.simulate_frame('deauth', '00:00:00:00:00:99',
                               is_spoofed=True, spoofed_mac='00:00:00:00:00:01')
 
     # Test 3: Multiple spoofed deauths (should trigger attack)
-    print("\n--- Test 3: Deauth attack (3 spoofed frames) ---")
+    print("\n" + "="*60)
+    print("  TEST 3: DEAUTH ATTACK (3 spoofed frames in rapid succession)")
+    print("  Expected: ATTACK DETECTED after 2nd spoofed frame")
+    print("="*60)
+    time.sleep(0.5)
     for i in range(3):
-        print(f"\nFrame {i+1}:")
+        print(f"\n  --- Spoofed Frame {i+1}/3 ---")
+        time.sleep(0.3)
         controller.simulate_frame('deauth', '00:00:00:00:00:99',
                                   is_spoofed=True, spoofed_mac='00:00:00:00:00:01')
 
+    # Wait for KCSM timeout
+    print("\n  [Waiting 2.5s for KCSM timeout reset...]")
+    time.sleep(2.5)
+
+    # Test 4: Evil Twin detection
+    print("\n" + "="*60)
+    print("  TEST 4: EVIL TWIN ATTACK (rogue AP with same SSID)")
+    print("  Expected: EVIL_TWIN attack detected")
+    print("="*60)
+    time.sleep(0.5)
+    controller.simulate_frame('beacon', 'AA:BB:CC:DD:EE:FF')  # Rogue BSSID
+
+    # Test 5: Auth flood
+    print("\n" + "="*60)
+    print("  TEST 5: AUTH FLOOD ATTACK (12 auth frames)")
+    print("  Expected: FLOOD detected after 10 frames")
+    print("="*60)
+    time.sleep(0.5)
+    for i in range(12):
+        controller.simulate_frame('auth', '00:00:00:00:00:99')
+
     # Print final stats
-    print("\n--- Final Statistics ---")
+    print("\n")
+    logger.print_stats()
+
+    # Also print internal stats
+    print("="*60)
+    print("  INTERNAL CONTROLLER STATISTICS")
+    print("="*60)
     stats = controller.get_stats()
     for key, value in stats.items():
-        print(f"  {key}: {value}")
+        if isinstance(value, dict):
+            print(f"  {key}:")
+            for k, v in value.items():
+                print(f"    {k}: {v}")
+        else:
+            print(f"  {key}: {value}")
