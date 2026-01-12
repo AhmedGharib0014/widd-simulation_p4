@@ -4,10 +4,9 @@
 #
 # Launches multiple xterm windows to visualize the complete WIDD system:
 #   - Terminal 1: Mininet-WiFi topology
-#   - Terminal 2: POX Controller (OODA Loop)
-#   - Terminal 3: bmv2 Switch Logs
-#   - Terminal 4: Attack Generator CLI
-#   - Terminal 5: Packet Monitor (optional)
+#   - Terminal 2: OODA Controller (MOCC + KCSM)
+#   - Terminal 3: bmv2 Switch Logs (optional)
+#   - Terminal 4: Attack Generator CLI (optional)
 #
 # Usage:
 #   sudo ./demo_launcher.sh
@@ -25,12 +24,11 @@ NC='\033[0m' # No Color
 
 # Project directory
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-POX_DIR="$PROJECT_DIR/pox"
 
 # Screen positions (adjust based on your screen resolution)
 # Format: geometry WIDTHxHEIGHT+X+Y
 TERM1_GEOM="100x30+0+0"       # Top-left: Mininet
-TERM2_GEOM="100x30+720+0"     # Top-right: POX Controller
+TERM2_GEOM="100x30+720+0"     # Top-right: OODA Controller
 TERM3_GEOM="100x20+0+500"     # Bottom-left: bmv2 logs
 TERM4_GEOM="100x20+720+500"   # Bottom-right: Attack CLI
 TERM5_GEOM="80x15+1440+0"     # Far right: Packet monitor (optional)

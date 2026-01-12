@@ -32,6 +32,3 @@ env/
 # OS
 .DS_Store
 Thumbs.db
-
-# External dependencies
-pox/

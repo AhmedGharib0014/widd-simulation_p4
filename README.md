@@ -54,7 +54,6 @@ widd/
 │   ├── widd.p4               # P4 program for bmv2 switch
 │   ├── widd.json             # Compiled P4 program
 │   └── Makefile              # P4 compilation rules
-├── pox/                      # POX controller framework (optional)
 ├── demo_launcher.sh          # Multi-terminal demo script
 └── interactive_attack.py     # Interactive attack CLI
 ```
@@ -173,13 +172,6 @@ make
 sudo make install
 ```
 
-### POX Controller (Optional)
-```bash
-# POX is included but optional - the OODA controller runs standalone
-# Only needed if you want to extend with OpenFlow features
-git clone https://github.com/noxrepo/pox
-```
-
 ### Python Dependencies
 ```bash
 pip3 install scapy thrift
@@ -281,7 +273,6 @@ THRIFT_PORT = 9090
 ## References
 
 - Zanna, P. et al. "Preventing Attacks on Wireless Networks Using SDN Controlled OODA Loops & Cyber Kill Chains" (2022)
-- [POX Controller](https://github.com/noxrepo/pox)
 - [Mininet-WiFi](https://github.com/intrig-unicamp/mininet-wifi)
 - [bmv2 P4 Switch](https://github.com/p4lang/behavioral-model)
 - [P4 Language](https://p4.org/)
