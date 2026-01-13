@@ -1,0 +1,114 @@
+@startuml WIDD Component Architecture
+
+!theme plain
+skinparam componentStyle rectangle
+skinparam backgroundColor #FFFFFF
+
+' ==================== COMPONENTS ====================
+
+package "Data Plane (P4/bmv2)" as DataPlane #LightCyan {
+    component [P4 Switch\n(widd.p4)] as P4Switch
+
+    note right of P4Switch
+        • Parses 802.11 frames
+        • Extracts RF features
+        • Classifies frame types
+        • Forwards to CPU port
+    end note
+}
+
+package "Control Plane (Python)" as ControlPlane #LightBlue {
+    component [OODA Controller] as OODA
+    component [MOCC\nRF Fingerprinting] as MOCC
+    component [KCSM\nState Machines] as KCSM
+    component [Switch Interface\nThrift API] as SwitchInterface
+    component [Logger] as Logger
+
+    note right of OODA
+        **OODA Loop:**
+        1. OBSERVE: Parse frames
+        2. ORIENT: Identify device
+        3. DECIDE: Detect attack
+        4. ACT: Countermeasures
+    end note
+}
+
+package "Attack Simulation" as AttackSim #LightCoral {
+    component [Attack Generator\nScapy] as AttackGen
+    component [Attack CLI\nInteractive] as AttackCLI
+
+    note right of AttackGen
+        • Deauth attacks
+        • Evil Twin AP
+        • Auth/Assoc floods
+        • Spoofed frames
+    end note
+}
+
+package "Demo/Visualization" as Demo #LightYellow {
+    component [Simulation Server\nSocket API] as SimServer
+    component [Packet Monitor\nReal-time Display] as Monitor
+}
+
+package "Network Layer (Mininet-WiFi)" as Network #LightGreen {
+    component [Access Points] as APs
+    component [Legitimate Clients] as Clients
+    component [Attacker Stations] as Attackers
+}
+
+' ==================== INTERFACES ====================
+
+interface "Packet-In\n(CPU Port 255)" as PacketIn
+interface "Packet-Out\n(CPU Port)" as PacketOut
+interface "Thrift RPC\n(Port 9090)" as ThriftRPC
+interface "Attack Commands\n(Port 9999)" as AttackAPI
+interface "Monitor Events\n(Port 9998)" as MonitorAPI
+interface "802.11 Frames\n(WiFi)" as WiFiFrames
+
+' ==================== CONNECTIONS ====================
+
+' Data Plane <-> Control Plane
+P4Switch -up- PacketIn
+P4Switch -up- PacketOut
+P4Switch -up- ThriftRPC
+
+OODA -down-> PacketIn : receives
+OODA -down-> PacketOut : sends
+SwitchInterface -down-> ThriftRPC : control
+
+' Control Plane Internal
+OODA *-- MOCC
+OODA *-- KCSM
+OODA *-- SwitchInterface
+OODA ..> Logger : logs
+
+' Control Plane <-> Demo
+OODA -left-> AttackAPI
+SimServer -left-> AttackAPI : listens
+SimServer -left-> MonitorAPI : broadcasts
+Monitor -left-> MonitorAPI : receives
+
+SimServer o-- OODA : references
+
+' Attack Simulation <-> Data Plane
+AttackGen -down-> WiFiFrames : sends
+AttackCLI -down-> AttackAPI : commands
+
+' Network Layer <-> Data Plane
+APs -up-> WiFiFrames
+Clients -up-> WiFiFrames
+Attackers -up-> WiFiFrames
+P4Switch -down-> WiFiFrames : receives
+
+' ==================== LEGENDS ====================
+
+legend right
+    |= Color |= Layer |
+    | <#LightCyan> | Data Plane (P4) |
+    | <#LightBlue> | Control Plane (Python) |
+    | <#LightCoral> | Attack Simulation |
+    | <#LightYellow> | Demo/Visualization |
+    | <#LightGreen> | Network Layer |
+endlegend
+
+@enduml
