@@ -1,0 +1,458 @@
+@startuml WIDD System Architecture
+
+!theme plain
+skinparam classAttributeIconSize 0
+skinparam backgroundColor #FFFFFF
+skinparam class {
+    BackgroundColor<<Controller>> LightBlue
+    BackgroundColor<<Detection>> LightGreen
+    BackgroundColor<<Attack>> LightCoral
+    BackgroundColor<<Data>> Wheat
+    BackgroundColor<<Enum>> LightGray
+    BorderColor Black
+    ArrowColor Black
+}
+
+' ==================== ENUMERATIONS ====================
+package "Enums" <<Enum>> {
+    enum AttackType {
+        NONE
+        DEAUTH
+        DISASSOC
+        EVIL_TWIN
+        CREDENTIAL
+        AUTH_FLOOD
+        ASSOC_FLOOD
+    }
+
+    enum FrameType {
+        DATA
+        AUTH
+        DEAUTH_TRUE
+        DEAUTH_FALSE
+        ASSOC
+        DISASSOC_TRUE
+        DISASSOC_FALSE
+        BEACON_EVIL
+    }
+
+    enum LogLevel {
+        DEBUG
+        INFO
+        WARNING
+        ERROR
+        CRITICAL
+    }
+}
+
+' ==================== DATA CLASSES ====================
+package "Data Models" <<Data>> {
+    class RFFeatures <<Data>> {
+        +rssi: int
+        +phase_offset: int
+        +pilot_offset: int
+        +mag_squared: int
+        --
+        +to_tuple(): Tuple
+        +distance(other: RFFeatures): float
+    }
+
+    class DeviceSignature <<Data>> {
+        +mac_address: str
+        +samples: list[RFFeatures]
+        +mean_features: RFFeatures
+        +std_features: RFFeatures
+        +trained: bool
+        +last_updated: float
+        --
+        {static} +MIN_SAMPLES: int = 100
+    }
+
+    class ClientState <<Data>> {
+        +mac_address: str
+        +deauth_state: int
+        +deauth_false_count: int
+        +deauth_total_count: int
+        +deauth_last_time: float
+        +disassoc_state: int
+        +disassoc_false_count: int
+        +disassoc_last_time: float
+        +auth_flood_state: int
+        +auth_count: int
+        +assoc_flood_state: int
+        +assoc_count: int
+        +evil_twin_detected: bool
+    }
+
+    class ParsedFrame <<Data>> {
+        +eth_dst: bytes
+        +eth_src: bytes
+        +eth_type: int
+        +frame_type: int
+        +subtype: int
+        +addr1: str
+        +addr2: str
+        +addr3: str
+        +rssi: int
+        +phase_offset: int
+        +pilot_offset: int
+        +mag_squared: int
+        +cpu_reason: int
+        +orig_port: int
+    }
+
+    class PacketInEvent <<Data>> {
+        +raw_packet: bytes
+        +reason: int
+        +orig_port: int
+        +rssi: int
+        +payload: bytes
+        --
+        +get_reason_name(): str
+    }
+}
+
+' ==================== MOCC (RF FINGERPRINTING) ====================
+package "MOCC - RF Device Fingerprinting" <<Detection>> {
+    class MOCC {
+        -signatures: Dict[str, DeviceSignature]
+        -_simulated_fingerprints: Dict[str, RFFeatures]
+        -rssi_noise_std: int = 3
+        -phase_noise_std: int = 10
+        -pilot_noise_std: int = 5
+        -mag_noise_std: int = 50
+        --
+        {static} +IDENTIFICATION_THRESHOLD: float = 0.35
+        --
+        +register_device(mac: str, base_rssi: int)
+        +simulate_rf_features(mac: str): RFFeatures
+        +train(mac: str, features: RFFeatures)
+        +identify(claimed_mac: str, features: RFFeatures): Tuple[float, bool]
+        +get_training_status(mac: str): Dict
+        -_update_signature(mac: str)
+    }
+}
+
+' ==================== KCSM (STATE MACHINES) ====================
+package "KCSM - Kill Chain State Machines" <<Detection>> {
+    class KCSMManager {
+        +deauth_kcsm: DeauthKCSM
+        +disassoc_kcsm: DisassocKCSM
+        +auth_flood_kcsm: AuthFloodKCSM
+        +assoc_flood_kcsm: AssocFloodKCSM
+        +known_ssid: str
+        +known_bssid: str
+        +evil_twin_detected: bool
+        +attack_counts: Dict[AttackType, int]
+        --
+        +set_network_info(ssid: str, bssid: str)
+        +process_deauth(mac: str, is_legitimate: bool): Tuple[AttackType, bool]
+        +process_disassoc(mac: str, is_legitimate: bool): Tuple[AttackType, bool]
+        +process_auth(): AttackType
+        +process_assoc(): AttackType
+        +process_beacon(ssid: str, bssid: str): AttackType
+        +get_stats(): Dict
+    }
+
+    class DeauthKCSM {
+        -clients: Dict[str, ClientState]
+        --
+        {static} +TIMEOUT: float = 2.0
+        {static} +FALSE_DEAUTH_THRESHOLD: int = 2
+        {static} +TOTAL_DEAUTH_THRESHOLD: int = 3
+        --
+        +get_client(mac: str): ClientState
+        +update(mac: str, is_legitimate: bool): Tuple[AttackType, bool]
+        +reset(mac: str)
+    }
+
+    class DisassocKCSM {
+        -clients: Dict[str, ClientState]
+        --
+        {static} +TIMEOUT: float = 2.0
+        {static} +FALSE_THRESHOLD: int = 2
+        {static} +TOTAL_THRESHOLD: int = 3
+        --
+        +get_client(mac: str): ClientState
+        +update(mac: str, is_legitimate: bool): Tuple[AttackType, bool]
+    }
+
+    class AuthFloodKCSM {
+        +auth_count: int
+        +last_time: float
+        +state: int
+        --
+        {static} +TIMEOUT: float = 2.0
+        {static} +FLOOD_THRESHOLD: int = 10
+        --
+        +update(): AttackType
+    }
+
+    class AssocFloodKCSM {
+        +assoc_count: int
+        +last_time: float
+        +state: int
+        --
+        {static} +TIMEOUT: float = 2.0
+        {static} +FLOOD_THRESHOLD: int = 10
+        --
+        +update(): AttackType
+    }
+}
+
+' ==================== SWITCH INTERFACE ====================
+package "Switch Interface - BMV2 Thrift" {
+    class SwitchInterface {
+        +thrift_ip: str
+        +thrift_port: int
+        +cpu_iface: str
+        -transport: TTransport
+        -client: Standard.Client
+        -connected: bool
+        -packet_in_queue: Queue
+        -packet_in_callback: Callable
+        -packet_in_thread: Thread
+        -stop_event: Event
+        -cpu_socket: socket
+        --
+        +connect(): bool
+        +disconnect()
+        +add_table_entry(table: str, matches: Dict, action: str): bool
+        +delete_table_entry(table: str, handle: int): bool
+        +read_register(name: str, index: int): int
+        +write_register(name: str, index: int, value: int): bool
+        +read_counter(name: str, index: int): Tuple
+        +start_packet_in_listener(callback: Callable, iface: str)
+        +stop_packet_in_listener()
+        +send_packet_out(port: int, packet: bytes): bool
+        -_packet_in_loop(iface: str)
+    }
+}
+
+' ==================== OODA CONTROLLER ====================
+package "OODA Controller - Main Control Loop" <<Controller>> {
+    class OODAController {
+        +switch: SwitchInterface
+        +mocc: MOCC
+        +kcsm: KCSMManager
+        +ssid: str
+        +bssid: str
+        +known_clients: Dict[str, bool]
+        +stats: Dict
+        +on_attack_detected: Callable
+        +running: bool
+        --
+        +register_client(mac: str, base_rssi: int)
+        +set_network_info(ssid: str, bssid: str)
+        +start(): bool
+        +stop()
+        +simulate_frame(frame_type: str, source_mac: str, is_spoofed: bool, spoofed_mac: str)
+        +get_stats(): Dict
+        --
+        -_handle_packet_in(event: PacketInEvent)
+        -_parse_frame(event: PacketInEvent): ParsedFrame
+        -_process_deauth(frame: ParsedFrame, rf: RFFeatures)
+        -_process_disassoc(frame: ParsedFrame, rf: RFFeatures)
+        -_process_auth(frame: ParsedFrame)
+        -_process_assoc(frame: ParsedFrame)
+        -_process_beacon(frame: ParsedFrame)
+        -_process_data(frame: ParsedFrame, rf: RFFeatures)
+        -_inject_false_handshake(target_mac: str)
+    }
+}
+
+' ==================== ATTACK GENERATOR ====================
+package "Attack Generation" <<Attack>> {
+    class AttackGenerator {
+        +interface: str
+        +wap_mac: str
+        +wap_bssid: str
+        +attacker_rssi: int
+        +attacker_phase: int
+        +attacker_pilot: int
+        +attacker_mag: int
+        --
+        +send_frame(frame: bytes, dst_mac: str, src_mac: str)
+        +deauth_attack(victim_mac: str, count: int, interval: float, spoof: bool): int
+        +disassoc_attack(victim_mac: str, count: int, interval: float)
+        +auth_flood(count: int, interval: float)
+        +assoc_flood(count: int, interval: float)
+        +evil_twin_beacon(ssid: str, count: int, interval: float)
+        +generate_legitimate_data(client_mac: str, count: int, rssi: int)
+    }
+}
+
+' ==================== SIMULATION SERVER ====================
+package "Simulation & Demo" {
+    class SimulationServer {
+        +controller: OODAController
+        +running: bool
+        -cmd_socket: socket
+        -monitor_clients: list
+        -event_queue: Queue
+        -cmd_thread: Thread
+        -broadcast_thread: Thread
+        --
+        +start()
+        +stop()
+        +emit_event(event: PacketEvent)
+        -_cmd_listener()
+        -_handle_cmd_client(client: socket)
+        -_process_command(msg: dict): dict
+        -_event_broadcaster()
+    }
+
+    class AttackClient {
+        +host: str
+        +port: int
+        -socket: socket
+        --
+        +connect(): bool
+        +disconnect()
+        +send_attack(attack_type: str, params): dict
+        +get_stats(): dict
+    }
+
+    class PacketMonitor {
+        +port: int
+        +running: bool
+        +callback: Callable
+        --
+        +start(callback: Callable)
+        +stop()
+        -_default_display(event: dict)
+    }
+
+    class PacketEvent {
+        +timestamp: float
+        +stage: str
+        +frame_type: str
+        +src_mac: str
+        +dst_mac: str
+        +details: dict
+        --
+        +to_dict(): dict
+    }
+}
+
+' ==================== LOGGER ====================
+package "Logging System" {
+    class WIDDLogger {
+        +use_colors: bool
+        +log_level: LogLevel
+        +start_time: float
+        +stats: Dict
+        --
+        +switch_packet_in(frame_type, src, dst, port, rssi)
+        +switch_packet_out(action, port, details)
+        +p4_classification(frame_type, subtype, table, action)
+        +ooda_observe(frame_type, src_mac, rf_features)
+        +ooda_orient_mocc(claimed_mac, prob, is_legit, rf_distance)
+        +ooda_orient_training(mac, samples, trained)
+        +ooda_decide_kcsm(frame_type, mac, state, attack_detected, attack_type)
+        +ooda_decide_drop(reason, mac)
+        +ooda_decide_pass(mac)
+        +ooda_act_countermeasure(action, target, details)
+        +ooda_act_alert(attack_type, message)
+        +attack_deauth(src, target, spoofed, count)
+        +attack_evil_twin(ssid, legit_bssid, rogue_bssid)
+        +attack_flood(flood_type, count, threshold)
+        +system_info(message)
+        +system_start(component)
+        +system_stop(component)
+        +system_error(component, message)
+        +print_banner()
+        +print_stats()
+        -_color(text: str, color: str): str
+        -_timestamp(): str
+        -_log(level, layer, component, action, details, color)
+    }
+}
+
+' ==================== RELATIONSHIPS ====================
+
+' OODA Controller Composition
+OODAController *-- SwitchInterface : contains
+OODAController *-- MOCC : contains
+OODAController *-- KCSMManager : contains
+OODAController ..> WIDDLogger : uses
+OODAController ..> ParsedFrame : creates
+OODAController ..> PacketInEvent : receives
+OODAController ..> RFFeatures : processes
+
+' KCSM Manager Composition
+KCSMManager *-- DeauthKCSM : contains
+KCSMManager *-- DisassocKCSM : contains
+KCSMManager *-- AuthFloodKCSM : contains
+KCSMManager *-- AssocFloodKCSM : contains
+KCSMManager ..> AttackType : returns
+KCSMManager ..> ClientState : manages
+
+' State Machines
+DeauthKCSM ..> ClientState : manages
+DisassocKCSM ..> ClientState : manages
+DeauthKCSM ..> AttackType : returns
+DisassocKCSM ..> AttackType : returns
+AuthFloodKCSM ..> AttackType : returns
+AssocFloodKCSM ..> AttackType : returns
+
+' MOCC
+MOCC *-- DeviceSignature : manages
+MOCC ..> RFFeatures : processes
+DeviceSignature o-- RFFeatures : contains
+
+' Switch Interface
+SwitchInterface ..> PacketInEvent : creates
+
+' Simulation Server
+SimulationServer o-- OODAController : references
+SimulationServer ..> PacketEvent : creates
+AttackClient ..> SimulationServer : connects to
+
+' Attack Generator
+AttackGenerator ..> RFFeatures : generates
+
+' Logger
+WIDDLogger ..> LogLevel : uses
+
+' Notes
+note right of OODAController
+    **OODA Loop Implementation**
+
+    1. OBSERVE: Receive frame from switch
+    2. ORIENT: MOCC identifies device
+    3. DECIDE: KCSM determines action
+    4. ACT: Drop/Pass/Inject countermeasures
+end note
+
+note right of MOCC
+    **RF Device Fingerprinting**
+
+    Uses Gaussian distance on RF features:
+    - RSSI (signal strength)
+    - Phase offset
+    - Pilot offset
+    - Magnitude squared
+
+    Threshold: 35% probability
+end note
+
+note right of KCSMManager
+    **Kill Chain State Machines**
+
+    Track attack progression:
+    - Deauth/Disassoc: 2 false frames = attack
+    - Auth/Assoc Flood: 10 frames/2s = attack
+    - Evil Twin: SSID match + BSSID mismatch
+end note
+
+note right of SimulationServer
+    **Demo Architecture**
+
+    Port 9999: Attack CLI commands
+    Port 9998: Packet Monitor events
+
+    Enables visualization without real hardware
+end note
+
+@enduml
