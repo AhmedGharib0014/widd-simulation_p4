@@ -149,13 +149,8 @@ class InteractiveAttackCLI:
             wap_bssid=self.wap_bssid
         )
 
-        if self.interface:
-            print(colored(f"  [+] Network interface: {self.interface}", Colors.GREEN))
-            print(colored(f"  [+] Attack packets will be sent via Scapy", Colors.GREEN))
-        else:
-            print(colored("  [!] No interface specified - packets won't be sent!", Colors.YELLOW))
-            print(colored("      Use: python3 interactive_attack.py --interface <iface>", Colors.DIM))
-
+        print(colored(f"  [+] Network interface: {self.interface}", Colors.GREEN))
+        print(colored(f"  [+] Attack packets will be sent via Scapy", Colors.GREEN))
         print(colored(f"  [*] Target AP: {self.wap_mac}", Colors.CYAN))
         print(colored(f"  [*] Attacker MAC: {self.attacker_mac}", Colors.CYAN))
 
@@ -176,9 +171,9 @@ class InteractiveAttackCLI:
 
     def show_sent(self, count: int, attack_type: str):
         """Display confirmation of sent packets."""
-        print(colored(f"\n  ✓ Sent {count} {attack_type} frames via {self.interface or 'N/A'}",
+        print(colored(f"\n  ✓ Sent {count} {attack_type} frames via {self.interface}",
                      Colors.GREEN))
-        print(colored(f"  → Check OODA Controller terminal for detection results", Colors.CYAN))
+        print(colored(f"  → Packets flowing through: Network → P4 Switch → OODA Controller", Colors.CYAN))
 
     def cmd_deauth(self, args):
         """Send deauthentication attack."""
@@ -329,9 +324,9 @@ class InteractiveAttackCLI:
         print(colored("\n┌─────────────────────────────────────────┐", Colors.CYAN))
         print(colored("│         NETWORK CONFIGURATION           │", Colors.CYAN + Colors.BOLD))
         print(colored("├─────────────────────────────────────────┤", Colors.CYAN))
-        print(colored(f"│  Interface:  {self.interface or 'None (dry-run mode)':20}      │", Colors.WHITE))
-        print(colored(f"│  Target AP:  {self.wap_mac:20}      │", Colors.WHITE))
-        print(colored(f"│  Attacker:   {self.attacker_mac:20}      │", Colors.WHITE))
+        print(colored(f"│  Interface:  {self.interface:25} │", Colors.WHITE))
+        print(colored(f"│  Target AP:  {self.wap_mac:25} │", Colors.WHITE))
+        print(colored(f"│  Attacker:   {self.attacker_mac:25} │", Colors.WHITE))
         print(colored("└─────────────────────────────────────────┘", Colors.CYAN))
 
     def cmd_demo1(self, args):
@@ -424,11 +419,7 @@ class InteractiveAttackCLI:
         while True:
             try:
                 # Prompt with network mode status
-                if self.interface:
-                    status = colored("[NETWORK]", Colors.GREEN)
-                else:
-                    status = colored("[DRY-RUN]", Colors.YELLOW)
-
+                status = colored("[NETWORK]", Colors.GREEN)
                 prompt = status + " " + colored("attack", Colors.RED) + colored("> ", Colors.WHITE)
                 cmd_input = input(prompt).strip()
 
@@ -509,10 +500,18 @@ class InteractiveAttackCLI:
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description='WIDD Interactive Attack CLI - Network Mode',
-        formatter_class=argparse.RawDescriptionHelpFormatter
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Real network mode (mininet-wifi):
+  python3 interactive_attack.py --interface attacker-wlan0
+
+  # Standard interface:
+  python3 interactive_attack.py --interface eth0
+        """
     )
-    parser.add_argument('--interface', '-i', type=str, default=None,
-                       help='Network interface to send packets (e.g., attacker-wlan0)')
+    parser.add_argument('--interface', '-i', type=str, required=True,
+                       help='Network interface to send packets (REQUIRED)')
 
     args = parser.parse_args()
 

@@ -179,72 +179,59 @@ pip3 install scapy thrift
 
 ## Usage
 
-### Quick Start (Demo Mode)
+### Real Network Mode (Recommended)
+
+**This is the recommended way** - tests the complete system with real packets!
+
+See **[NETWORK_SETUP.md](NETWORK_SETUP.md)** for detailed step-by-step guide.
+
+#### Quick Start:
+
+**Terminal 1: Start Mininet-WiFi**
 ```bash
-# Launch multi-terminal demo
-sudo ./demo_launcher.sh
-```
-
-This opens:
-- **Terminal 1**: Mininet-WiFi topology
-- **Terminal 2**: OODA Controller with MOCC + KCSM output
-
-### Manual Start (Network Mode)
-
-1. **Start Mininet-WiFi Topology** (Terminal 1):
-```bash
-cd /path/to/widd
 sudo python3 topology/widd_topo.py
 ```
 
-2. **Start OODA Controller** (Terminal 2):
+**Terminal 2: Start OODA Controller**
 ```bash
-# In production mode, controller connects to bmv2 switch
-python3 -m controller.ooda_controller
+python3 run_controller.py
 ```
 
-3. **Launch Attack CLI** (Terminal 3 - from Mininet CLI):
+**Terminal 3: Launch Attack CLI (from mininet)**
 ```bash
-# From mininet-wifi CLI:
 mininet-wifi> xterm attacker
 
 # In attacker terminal:
 python3 interactive_attack.py --interface attacker-wlan0
 ```
 
-The Attack CLI now sends **real packets through the network** using Scapy. All attacks go through:
+**Architecture Flow:**
 ```
-Attack CLI → Scapy → Network Interface → P4 Switch → OODA Controller
+Attack CLI → Scapy → Mininet-WiFi → BMV2 P4 Switch → OODA Controller
+            (NO BYPASS - TESTS COMPLETE SYSTEM!)
 ```
 
-### Demo Mode (Simulation - No Network)
+Features:
+- ✅ Real 802.11 frame generation via Scapy
+- ✅ Real P4 switch processing
+- ✅ Real packet-in handling
+- ✅ Real MOCC RF fingerprinting
+- ✅ Real KCSM state machine detection
+- ✅ Production-like environment
 
-For testing without network hardware:
+### Simulation Mode (For Algorithm Testing Only)
 
-1. **Start OODA Controller Server** (Terminal 1):
+For quick algorithm testing without network (bypasses P4 switch):
+
 ```bash
+# Start simulation server (Terminal 1)
 python3 start_server.py
-```
 
-2. **Start Attack CLI** (Terminal 2):
-```bash
-# Simulation mode - no interface needed
-python3 interactive_attack.py
-```
-
-3. **Start Packet Monitor** (Terminal 3):
-```bash
+# Packet monitor (Terminal 2)
 python3 packet_monitor.py
 ```
 
-**Note**: In demo mode without `--interface`, the Attack CLI runs in dry-run mode (packets are not actually sent).
-
-Features demonstrated:
-- Device registration and RF signature learning
-- Real Scapy packet generation
-- Legitimate vs spoofed frame detection
-- MOCC probability scoring
-- KCSM attack state transitions
+**⚠️ Note**: Simulation mode bypasses the network and P4 switch - use only for quick algorithm testing, not for full system validation.
 
 ## Attack Types Detected
 
