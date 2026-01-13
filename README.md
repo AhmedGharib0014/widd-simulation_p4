@@ -189,16 +189,46 @@ This opens:
 - **Terminal 1**: Mininet-WiFi topology
 - **Terminal 2**: OODA Controller with MOCC + KCSM output
 
-### Manual Start
+### Manual Start (Network Mode)
+
+1. **Start Mininet-WiFi Topology** (Terminal 1):
+```bash
+cd /path/to/widd
+sudo python3 topology/widd_topo.py
+```
+
+2. **Start OODA Controller** (Terminal 2):
+```bash
+# In production mode, controller connects to bmv2 switch
+python3 -m controller.ooda_controller
+```
+
+3. **Launch Attack CLI** (Terminal 3 - from Mininet CLI):
+```bash
+# From mininet-wifi CLI:
+mininet-wifi> xterm attacker
+
+# In attacker terminal:
+python3 interactive_attack.py --interface attacker-wlan0
+```
+
+The Attack CLI now sends **real packets through the network** using Scapy. All attacks go through:
+```
+Attack CLI → Scapy → Network Interface → P4 Switch → OODA Controller
+```
+
+### Demo Mode (Simulation - No Network)
+
+For testing without network hardware:
 
 1. **Start OODA Controller Server** (Terminal 1):
 ```bash
-cd /path/to/widd
 python3 start_server.py
 ```
 
 2. **Start Attack CLI** (Terminal 2):
 ```bash
+# Simulation mode - no interface needed
 python3 interactive_attack.py
 ```
 
@@ -207,14 +237,11 @@ python3 interactive_attack.py
 python3 packet_monitor.py
 ```
 
-### Interactive Demo Mode
-The system includes an interactive demo that runs without real network hardware:
-- Server simulates the OODA loop and attack detection
-- Attack CLI allows manual attack triggering
-- Packet Monitor visualizes the flow in real-time
+**Note**: In demo mode without `--interface`, the Attack CLI runs in dry-run mode (packets are not actually sent).
 
 Features demonstrated:
 - Device registration and RF signature learning
+- Real Scapy packet generation
 - Legitimate vs spoofed frame detection
 - MOCC probability scoring
 - KCSM attack state transitions

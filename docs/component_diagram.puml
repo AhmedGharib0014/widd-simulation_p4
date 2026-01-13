@@ -37,11 +37,14 @@ package "Attack Simulation" as AttackSim #LightCoral {
     component [Attack Generator\nScapy] as AttackGen
     component [Attack CLI\nInteractive] as AttackCLI
 
-    note right of AttackGen
+    note right of AttackCLI
+        Uses AttackGenerator to send:
         • Deauth attacks
         • Evil Twin AP
         • Auth/Assoc floods
         • Spoofed frames
+
+        All attacks go through real network!
     end note
 }
 
@@ -91,8 +94,9 @@ Monitor -left-> MonitorAPI : receives
 SimServer o-- OODA : references
 
 ' Attack Simulation <-> Data Plane
-AttackGen -down-> WiFiFrames : sends
-AttackCLI -down-> AttackAPI : commands
+AttackCLI o-- AttackGen : uses
+AttackGen -down-> WiFiFrames : sends packets
+AttackCLI -down-> WiFiFrames : sends via AttackGen
 
 ' Network Layer <-> Data Plane
 APs -up-> WiFiFrames

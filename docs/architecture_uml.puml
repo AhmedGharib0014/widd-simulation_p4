@@ -302,15 +302,26 @@ package "Simulation & Demo" {
         -_event_broadcaster()
     }
 
-    class AttackClient {
-        +host: str
-        +port: int
-        -socket: socket
+    class InteractiveAttackCLI {
+        +interface: str
+        +attack_gen: AttackGenerator
+        +clients: Dict[str, str]
+        +attacker_mac: str
+        +wap_mac: str
+        +wap_bssid: str
         --
-        +connect(): bool
-        +disconnect()
-        +send_attack(attack_type: str, params): dict
-        +get_stats(): dict
+        +initialize()
+        +resolve_mac(name_or_mac: str): str
+        +log_attack(attack_type: str, target: str, count: int)
+        +show_sent(count: int, attack_type: str)
+        +cmd_deauth(args: list)
+        +cmd_disassoc(args: list)
+        +cmd_evil_twin(args: list)
+        +cmd_auth_flood(args: list)
+        +cmd_assoc_flood(args: list)
+        +cmd_data(args: list)
+        +cmd_train(args: list)
+        +run()
     }
 
     class PacketMonitor {
@@ -407,7 +418,10 @@ SwitchInterface ..> PacketInEvent : creates
 ' Simulation Server
 SimulationServer o-- OODAController : references
 SimulationServer ..> PacketEvent : creates
-AttackClient ..> SimulationServer : connects to
+
+' Interactive Attack CLI
+InteractiveAttackCLI o-- AttackGenerator : uses
+InteractiveAttackCLI ..> AttackGenerator : sends attacks via
 
 ' Attack Generator
 AttackGenerator ..> RFFeatures : generates

@@ -2,27 +2,28 @@
 """
 WIDD Interactive Attack CLI
 
-A colorful command-line interface for launching attacks and observing
-the WIDD system's response in real-time.
+A colorful command-line interface for launching real attacks through
+the mininet-wifi network using Scapy.
 
-This CLI connects to the OODA Controller's simulation server to send
-attacks and receive real-time feedback.
+This CLI sends real 802.11 frames that go through the P4 switch and
+are processed by the OODA Controller - no simulation bypass!
 
 Usage:
-    python3 interactive_attack.py
+    python3 interactive_attack.py [--interface IFACE]
 """
 
 import sys
 import os
 import time
-import socket
-import json
+import argparse
 import readline  # For command history
 from datetime import datetime
 
 # Add project root to path
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJECT_ROOT)
+
+from attacks.attack_generator import AttackGenerator
 
 # ANSI Colors
 class Colors:
@@ -54,8 +55,8 @@ def print_banner():
 ║    ██║  ██║   ██║      ██║   ██║  ██║╚██████╗██║  ██╗            ║
 ║    ╚═╝  ╚═╝   ╚═╝      ╚═╝   ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝            ║
 ║                                                                   ║
-║              WIDD Attack Simulation Console                       ║
-║         Connected to OODA Controller for live detection          ║
+║              WIDD Attack Console - Network Mode                   ║
+║         Sends real packets through mininet-wifi network          ║
 ║                                                                   ║
 ╚═══════════════════════════════════════════════════════════════════╝
 """
@@ -68,14 +69,16 @@ def print_help():
 │                        AVAILABLE COMMANDS                           │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                     │
-│  ATTACKS (sent to OODA Controller):                                 │
+│  ATTACKS (sent via Scapy to network):                               │
 │    deauth <victim> [count]    - Deauth attack spoofing victim MAC   │
+│    disassoc <victim> [count]  - Disassociation attack               │
 │    evil_twin                  - Broadcast evil twin beacon          │
 │    auth_flood [count]         - Authentication request flood        │
+│    assoc_flood [count]        - Association request flood           │
 │                                                                     │
 │  LEGITIMATE TRAFFIC:                                                │
 │    data <client> [count]      - Send legitimate data frames         │
-│    train <client>             - Train MOCC with 100 data frames     │
+│    train <client>             - Send 100 data frames for training   │
 │                                                                     │
 │  DEMO SCENARIOS:                                                    │
 │    demo1                      - Single spoofed deauth               │
@@ -86,11 +89,12 @@ def print_help():
 │                                                                     │
 │  SYSTEM:                                                            │
 │    clients                    - Show registered clients             │
-│    stats                      - Show controller statistics          │
-│    connect                    - Reconnect to controller             │
+│    interface                  - Show current network interface      │
 │    clear                      - Clear screen                        │
 │    help                       - Show this help                      │
 │    quit / exit                - Exit the CLI                        │
+│                                                                     │
+│  NOTE: Check the OODA Controller terminal for detection results!   │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 """
@@ -122,9 +126,9 @@ def print_clients():
 
 
 class InteractiveAttackCLI:
-    def __init__(self):
-        self.socket = None
-        self.connected = False
+    def __init__(self, interface: str = None):
+        self.interface = interface
+        self.attack_gen = None
 
         # Client MAC shortcuts
         self.clients = {
@@ -134,38 +138,26 @@ class InteractiveAttackCLI:
         }
 
         self.attacker_mac = '00:00:00:00:00:99'
+        self.wap_mac = '00:11:22:33:44:55'
+        self.wap_bssid = '00:11:22:33:44:55'
 
-    def connect(self) -> bool:
-        """Connect to the OODA controller's simulation server."""
-        try:
-            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.socket.connect(('127.0.0.1', 9999))
-            self.socket.settimeout(30.0)
-            self.connected = True
-            print(colored("  [+] Connected to OODA Controller", Colors.GREEN))
-            return True
-        except ConnectionRefusedError:
-            print(colored("  [!] OODA Controller not running!", Colors.RED))
-            print(colored("      Start it first with: python3 -m controller.ooda_controller --server", Colors.YELLOW))
-            self.connected = False
-            return False
-        except Exception as e:
-            print(colored(f"  [!] Connection failed: {e}", Colors.RED))
-            self.connected = False
-            return False
+    def initialize(self):
+        """Initialize the attack generator."""
+        self.attack_gen = AttackGenerator(
+            interface=self.interface,
+            wap_mac=self.wap_mac,
+            wap_bssid=self.wap_bssid
+        )
 
-    def send_command(self, msg: dict) -> dict:
-        """Send command to controller and get response."""
-        if not self.connected:
-            return {'error': 'Not connected'}
+        if self.interface:
+            print(colored(f"  [+] Network interface: {self.interface}", Colors.GREEN))
+            print(colored(f"  [+] Attack packets will be sent via Scapy", Colors.GREEN))
+        else:
+            print(colored("  [!] No interface specified - packets won't be sent!", Colors.YELLOW))
+            print(colored("      Use: python3 interactive_attack.py --interface <iface>", Colors.DIM))
 
-        try:
-            self.socket.send(json.dumps(msg).encode())
-            response = self.socket.recv(8192)
-            return json.loads(response.decode())
-        except Exception as e:
-            self.connected = False
-            return {'error': str(e)}
+        print(colored(f"  [*] Target AP: {self.wap_mac}", Colors.CYAN))
+        print(colored(f"  [*] Attacker MAC: {self.attacker_mac}", Colors.CYAN))
 
     def resolve_mac(self, name_or_mac):
         """Resolve client name to MAC address."""
@@ -182,34 +174,11 @@ class InteractiveAttackCLI:
               colored(f"SENDING: {attack_type}", Colors.RED + Colors.BOLD) +
               colored(f"{target_str} x{count}", Colors.YELLOW))
 
-    def show_result(self, result: dict):
-        """Display the result from controller."""
-        if 'error' in result:
-            print(colored(f"  ERROR: {result['error']}", Colors.RED))
-            return
-
-        results = result.get('results', [])
-        for r in results:
-            frame_num = r.get('frame', '')
-            attack = r.get('attack', 'NONE')
-            dropped = r.get('dropped', False)
-            prob = r.get('prob', 0)
-
-            # Format output
-            frame_str = f"[{frame_num}] " if frame_num else ""
-
-            if attack != 'NONE':
-                print(colored(f"  {frame_str}", Colors.DIM) +
-                      colored("ATTACK DETECTED: ", Colors.RED + Colors.BOLD) +
-                      colored(attack, Colors.YELLOW))
-            elif dropped:
-                print(colored(f"  {frame_str}", Colors.DIM) +
-                      colored("DROPPED ", Colors.RED) +
-                      colored(f"(MOCC prob: {prob:.1%})", Colors.DIM))
-            else:
-                print(colored(f"  {frame_str}", Colors.DIM) +
-                      colored("PASSED ", Colors.GREEN) +
-                      colored(f"(MOCC prob: {prob:.1%})", Colors.DIM))
+    def show_sent(self, count: int, attack_type: str):
+        """Display confirmation of sent packets."""
+        print(colored(f"\n  ✓ Sent {count} {attack_type} frames via {self.interface or 'N/A'}",
+                     Colors.GREEN))
+        print(colored(f"  → Check OODA Controller terminal for detection results", Colors.CYAN))
 
     def cmd_deauth(self, args):
         """Send deauthentication attack."""
@@ -228,40 +197,54 @@ class InteractiveAttackCLI:
         print(colored("  Your RF sig: ", Colors.WHITE) +
               colored(self.attacker_mac, Colors.RED) +
               colored(" (won't match!)", Colors.DIM))
-        print()
 
-        # Send to controller
-        result = self.send_command({
-            'type': 'attack',
-            'attack': 'deauth',
-            'params': {
-                'victim': victim,
-                'count': count,
-                'attacker': self.attacker_mac
-            }
-        })
+        # Send via Scapy
+        sent = self.attack_gen.deauth_attack(
+            victim_mac=victim,
+            count=count,
+            interval=0.1,
+            spoof=True
+        )
 
-        print(colored("  Controller Response:", Colors.CYAN))
-        self.show_result(result)
+        self.show_sent(sent, "deauth")
+
+    def cmd_disassoc(self, args):
+        """Send disassociation attack."""
+        if len(args) < 1:
+            print(colored("Usage: disassoc <victim> [count]", Colors.YELLOW))
+            return
+
+        victim = self.resolve_mac(args[0])
+        count = int(args[1]) if len(args) > 1 else 3
+
+        self.log_attack("SPOOFED DISASSOC", victim, count)
+
+        # Send via Scapy
+        self.attack_gen.disassoc_attack(
+            victim_mac=victim,
+            count=count,
+            interval=0.1
+        )
+
+        self.show_sent(count, "disassoc")
 
     def cmd_evil_twin(self, args):
         """Broadcast evil twin beacon."""
-        self.log_attack("EVIL TWIN BEACON", "SSID: WIDD_Network", 1)
+        self.log_attack("EVIL TWIN BEACON", "SSID: WIDD_Network", 10)
 
         print(colored("\n  Rogue BSSID: ", Colors.WHITE) +
               colored("AA:BB:CC:DD:EE:FF", Colors.RED))
         print(colored("  Same SSID:   ", Colors.WHITE) +
               colored("WIDD_Network", Colors.YELLOW))
-        print()
 
-        result = self.send_command({
-            'type': 'attack',
-            'attack': 'evil_twin',
-            'params': {}
-        })
+        # Send via Scapy
+        self.attack_gen.evil_twin_beacon(
+            ssid='WIDD_Network',
+            count=10,
+            interval=0.1
+        )
 
-        print(colored("  Controller Response:", Colors.CYAN))
-        self.show_result(result)
+        self.show_sent(10, "evil twin beacon")
 
     def cmd_auth_flood(self, args):
         """Send authentication flood."""
@@ -270,16 +253,30 @@ class InteractiveAttackCLI:
         self.log_attack("AUTH FLOOD", "AP", count)
 
         print(colored("\n  Flooding with random source MACs...", Colors.WHITE))
-        print()
 
-        result = self.send_command({
-            'type': 'attack',
-            'attack': 'auth_flood',
-            'params': {'count': count}
-        })
+        # Send via Scapy
+        self.attack_gen.auth_flood(
+            count=count,
+            interval=0.001
+        )
 
-        print(colored("  Controller Response:", Colors.CYAN))
-        self.show_result(result)
+        self.show_sent(count, "auth flood")
+
+    def cmd_assoc_flood(self, args):
+        """Send association flood."""
+        count = int(args[0]) if len(args) > 0 else 12
+
+        self.log_attack("ASSOC FLOOD", "AP", count)
+
+        print(colored("\n  Flooding with random source MACs...", Colors.WHITE))
+
+        # Send via Scapy
+        self.attack_gen.assoc_flood(
+            count=count,
+            interval=0.001
+        )
+
+        self.show_sent(count, "assoc flood")
 
     def cmd_data(self, args):
         """Send legitimate data frames for training."""
@@ -295,13 +292,17 @@ class InteractiveAttackCLI:
               colored("SENDING: LEGITIMATE DATA", Colors.GREEN + Colors.BOLD) +
               colored(f" from {client} x{count}", Colors.WHITE))
 
-        result = self.send_command({
-            'type': 'attack',
-            'attack': 'data',
-            'params': {'source': client, 'count': count}
-        })
+        # Send via Scapy with legitimate RF characteristics
+        self.attack_gen.generate_legitimate_data(
+            client_mac=client,
+            count=count,
+            rssi=-50,  # Use client's expected RSSI
+            phase=200,
+            pilot=100,
+            mag=2000
+        )
 
-        print(colored(f"  Sent {count} data frames for MOCC training", Colors.GREEN))
+        print(colored(f"\n  ✓ Sent {count} data frames for MOCC training", Colors.GREEN))
 
     def cmd_train(self, args):
         """Train MOCC with data frames."""
@@ -312,31 +313,25 @@ class InteractiveAttackCLI:
         client = self.resolve_mac(args[0])
         print(colored(f"\n  Training MOCC with 100 frames from {client}...", Colors.CYAN))
 
-        result = self.send_command({
-            'type': 'attack',
-            'attack': 'data',
-            'params': {'source': client, 'count': 100}
-        })
+        self.attack_gen.generate_legitimate_data(
+            client_mac=client,
+            count=100,
+            rssi=-50,
+            phase=200,
+            pilot=100,
+            mag=2000
+        )
 
-        print(colored(f"  MOCC training complete for {client}", Colors.GREEN))
+        print(colored(f"  ✓ MOCC training complete for {client}", Colors.GREEN))
 
-    def cmd_stats(self, args):
-        """Show controller statistics."""
-        result = self.send_command({'type': 'stats'})
-
-        if 'error' in result:
-            print(colored(f"  Error: {result['error']}", Colors.RED))
-            return
-
-        stats = result.get('stats', {})
-
+    def cmd_interface(self, args):
+        """Show current interface."""
         print(colored("\n┌─────────────────────────────────────────┐", Colors.CYAN))
-        print(colored("│       OODA CONTROLLER STATISTICS        │", Colors.CYAN + Colors.BOLD))
+        print(colored("│         NETWORK CONFIGURATION           │", Colors.CYAN + Colors.BOLD))
         print(colored("├─────────────────────────────────────────┤", Colors.CYAN))
-        print(colored(f"│  Deauth frames:        {stats.get('deauth_frames', 0):5}            │", Colors.WHITE))
-        print(colored(f"│  Deauth dropped:       {stats.get('deauth_dropped', 0):5}            │", Colors.RED))
-        print(colored(f"│  Attacks detected:     {stats.get('attacks_detected', 0):5}            │", Colors.RED + Colors.BOLD))
-        print(colored(f"│  MOCC devices:         {stats.get('mocc_devices', 0):5}            │", Colors.GREEN))
+        print(colored(f"│  Interface:  {self.interface or 'None (dry-run mode)':20}      │", Colors.WHITE))
+        print(colored(f"│  Target AP:  {self.wap_mac:20}      │", Colors.WHITE))
+        print(colored(f"│  Attacker:   {self.attacker_mac:20}      │", Colors.WHITE))
         print(colored("└─────────────────────────────────────────┘", Colors.CYAN))
 
     def cmd_demo1(self, args):
@@ -344,9 +339,9 @@ class InteractiveAttackCLI:
         print(colored("\n" + "="*60, Colors.YELLOW))
         print(colored("  DEMO 1: Single Spoofed Deauth Frame", Colors.YELLOW + Colors.BOLD))
         print(colored("="*60, Colors.YELLOW))
-        print(colored("\n  Sending ONE spoofed deauth frame.", Colors.WHITE))
+        print(colored("\n  Sending ONE spoofed deauth frame via network.", Colors.WHITE))
         print(colored("  The OODA Controller will:", Colors.WHITE))
-        print(colored("    1. OBSERVE - Receive frame from switch", Colors.CYAN))
+        print(colored("    1. OBSERVE - Receive frame from P4 switch", Colors.CYAN))
         print(colored("    2. ORIENT  - MOCC checks RF signature (MISMATCH!)", Colors.YELLOW))
         print(colored("    3. DECIDE  - KCSM updates state, decides DROP", Colors.RED))
         print(colored("    4. ACT     - Frame dropped (no alert yet, just 1 frame)", Colors.MAGENTA))
@@ -359,7 +354,7 @@ class InteractiveAttackCLI:
         print(colored("\n" + "="*60, Colors.RED))
         print(colored("  DEMO 2: Full Deauth Attack (Triggers KCSM!)", Colors.RED + Colors.BOLD))
         print(colored("="*60, Colors.RED))
-        print(colored("\n  Sending 5 rapid spoofed deauth frames.", Colors.WHITE))
+        print(colored("\n  Sending 5 rapid spoofed deauth frames via network.", Colors.WHITE))
         print(colored("  After 2 spoofed frames, KCSM triggers ATTACK ALERT!", Colors.RED))
         print(colored("  Countermeasure: False handshake injection activated", Colors.MAGENTA))
         input(colored("\n  Press Enter to attack...", Colors.DIM))
@@ -384,7 +379,7 @@ class InteractiveAttackCLI:
         print(colored("\n" + "="*60, Colors.BLUE))
         print(colored("  DEMO 4: Authentication Flood Attack", Colors.BLUE + Colors.BOLD))
         print(colored("="*60, Colors.BLUE))
-        print(colored("\n  Flooding AP with 12 auth requests.", Colors.WHITE))
+        print(colored("\n  Flooding AP with 12 auth requests via network.", Colors.WHITE))
         print(colored("  KCSM threshold: 10 frames in 2 seconds", Colors.YELLOW))
         print(colored("  After threshold, AUTH_FLOOD attack detected!", Colors.RED))
         input(colored("\n  Press Enter to attack...", Colors.DIM))
@@ -414,16 +409,13 @@ class InteractiveAttackCLI:
             time.sleep(3)
 
         print(colored("\n  ALL DEMOS COMPLETE!", Colors.GREEN + Colors.BOLD))
-        self.cmd_stats([])
 
     def run(self):
         """Main CLI loop."""
         print_banner()
 
-        print(colored("\n  Connecting to OODA Controller...", Colors.CYAN))
-        if not self.connect():
-            print(colored("\n  Running in OFFLINE mode (no live detection)", Colors.YELLOW))
-            print(colored("  Start controller first: python3 -m controller.ooda_controller --server", Colors.DIM))
+        print(colored("\n  Initializing attack generator...", Colors.CYAN))
+        self.initialize()
 
         print_help()
 
@@ -431,11 +423,11 @@ class InteractiveAttackCLI:
 
         while True:
             try:
-                # Prompt with connection status
-                if self.connected:
-                    status = colored("[LIVE]", Colors.GREEN)
+                # Prompt with network mode status
+                if self.interface:
+                    status = colored("[NETWORK]", Colors.GREEN)
                 else:
-                    status = colored("[OFFLINE]", Colors.RED)
+                    status = colored("[DRY-RUN]", Colors.YELLOW)
 
                 prompt = status + " " + colored("attack", Colors.RED) + colored("> ", Colors.WHITE)
                 cmd_input = input(prompt).strip()
@@ -462,74 +454,44 @@ class InteractiveAttackCLI:
                 elif cmd == 'clients':
                     print_clients()
 
-                elif cmd == 'connect':
-                    self.connect()
-
-                elif cmd == 'stats':
-                    if self.connected:
-                        self.cmd_stats(args)
-                    else:
-                        print(colored("  Not connected to controller", Colors.RED))
+                elif cmd == 'interface':
+                    self.cmd_interface(args)
 
                 elif cmd == 'deauth':
-                    if self.connected:
-                        self.cmd_deauth(args)
-                    else:
-                        print(colored("  Not connected - run 'connect' first", Colors.RED))
+                    self.cmd_deauth(args)
+
+                elif cmd == 'disassoc':
+                    self.cmd_disassoc(args)
 
                 elif cmd in ['evil_twin', 'eviltwin', 'evil']:
-                    if self.connected:
-                        self.cmd_evil_twin(args)
-                    else:
-                        print(colored("  Not connected", Colors.RED))
+                    self.cmd_evil_twin(args)
 
                 elif cmd in ['auth_flood', 'authflood']:
-                    if self.connected:
-                        self.cmd_auth_flood(args)
-                    else:
-                        print(colored("  Not connected", Colors.RED))
+                    self.cmd_auth_flood(args)
+
+                elif cmd in ['assoc_flood', 'assocflood']:
+                    self.cmd_assoc_flood(args)
 
                 elif cmd == 'data':
-                    if self.connected:
-                        self.cmd_data(args)
-                    else:
-                        print(colored("  Not connected", Colors.RED))
+                    self.cmd_data(args)
 
                 elif cmd == 'train':
-                    if self.connected:
-                        self.cmd_train(args)
-                    else:
-                        print(colored("  Not connected", Colors.RED))
+                    self.cmd_train(args)
 
                 elif cmd == 'demo1':
-                    if self.connected:
-                        self.cmd_demo1(args)
-                    else:
-                        print(colored("  Not connected", Colors.RED))
+                    self.cmd_demo1(args)
 
                 elif cmd == 'demo2':
-                    if self.connected:
-                        self.cmd_demo2(args)
-                    else:
-                        print(colored("  Not connected", Colors.RED))
+                    self.cmd_demo2(args)
 
                 elif cmd == 'demo3':
-                    if self.connected:
-                        self.cmd_demo3(args)
-                    else:
-                        print(colored("  Not connected", Colors.RED))
+                    self.cmd_demo3(args)
 
                 elif cmd == 'demo4':
-                    if self.connected:
-                        self.cmd_demo4(args)
-                    else:
-                        print(colored("  Not connected", Colors.RED))
+                    self.cmd_demo4(args)
 
                 elif cmd == 'demo_all':
-                    if self.connected:
-                        self.cmd_demo_all(args)
-                    else:
-                        print(colored("  Not connected", Colors.RED))
+                    self.cmd_demo_all(args)
 
                 else:
                     print(colored(f"Unknown command: {cmd}", Colors.RED))
@@ -540,8 +502,19 @@ class InteractiveAttackCLI:
 
             except Exception as e:
                 print(colored(f"Error: {e}", Colors.RED))
+                import traceback
+                traceback.print_exc()
 
 
 if __name__ == '__main__':
-    cli = InteractiveAttackCLI()
+    parser = argparse.ArgumentParser(
+        description='WIDD Interactive Attack CLI - Network Mode',
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument('--interface', '-i', type=str, default=None,
+                       help='Network interface to send packets (e.g., attacker-wlan0)')
+
+    args = parser.parse_args()
+
+    cli = InteractiveAttackCLI(interface=args.interface)
     cli.run()
