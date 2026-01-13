@@ -191,31 +191,29 @@ This opens:
 
 ### Manual Start
 
-1. **Start OODA Controller** (Terminal 1):
+1. **Start OODA Controller Server** (Terminal 1):
 ```bash
 cd /path/to/widd
-python3 -m controller.ooda_controller
+python3 start_server.py
 ```
 
-2. **Start Mininet-WiFi Topology** (Terminal 2):
+2. **Start Attack CLI** (Terminal 2):
 ```bash
-sudo python3 topology/widd_topo.py
+python3 interactive_attack.py
 ```
 
-3. **Launch Attacks** (from Mininet CLI):
+3. **Start Packet Monitor** (Terminal 3):
 ```bash
-mininet-wifi> xterm attacker
-# In attacker terminal:
-python3 attacks/attack_generator.py
+python3 packet_monitor.py
 ```
 
-### Simulation Mode (No Network)
-```bash
-# Test OODA controller logic without Mininet/bmv2
-python3 -m controller.ooda_controller
-```
+### Interactive Demo Mode
+The system includes an interactive demo that runs without real network hardware:
+- Server simulates the OODA loop and attack detection
+- Attack CLI allows manual attack triggering
+- Packet Monitor visualizes the flow in real-time
 
-This runs the built-in simulation that demonstrates:
+Features demonstrated:
 - Device registration and RF signature learning
 - Legitimate vs spoofed frame detection
 - MOCC probability scoring

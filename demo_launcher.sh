@@ -74,7 +74,7 @@ cleanup() {
     pkill -f "xterm.*WIDD" 2>/dev/null || true
 
     # Kill Python processes
-    pkill -f "ooda_controller" 2>/dev/null || true
+    pkill -f "start_server" 2>/dev/null || true
     pkill -f "interactive_attack" 2>/dev/null || true
     pkill -f "packet_monitor" 2>/dev/null || true
 
@@ -91,7 +91,7 @@ launch_controller() {
           -geometry $TERM_CONTROLLER \
           $XTERM_OPTS \
           -fg green \
-          -e "cd $PROJECT_DIR && python3 -m controller.ooda_controller --server; read -p 'Press Enter to close...'" &
+          -e "cd $PROJECT_DIR && python3 start_server.py; read -p 'Press Enter to close...'" &
 
     sleep 3
     echo -e "${GREEN}[+] OODA Controller started (listening on port 9999)${NC}"
