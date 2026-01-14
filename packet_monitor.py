@@ -344,7 +344,8 @@ class PacketFlowMonitor:
         try:
             sock.bind(('127.0.0.1', port))
             sock.settimeout(1.0)
-            print(colored(f"  Listening for packets on port {port}...\n", Colors.CYAN))
+            print(colored(f"  Listening for packets on port {port}...", Colors.CYAN))
+            print(colored(f"  Waiting for events from OODA Controller...\n", Colors.DIM))
 
             while self.running:
                 try:
@@ -355,10 +356,18 @@ class PacketFlowMonitor:
                     continue
                 except json.JSONDecodeError:
                     continue
+                except KeyboardInterrupt:
+                    break
         except OSError as e:
             print(colored(f"  Could not bind to port {port}: {e}", Colors.RED))
-            print(colored("  Running in simulation mode instead...\n", Colors.YELLOW))
-            self.simulate_traffic()
+            print(colored("  The port may already be in use.", Colors.YELLOW))
+            print(colored("  Monitor will stay open but won't receive events.\n", Colors.DIM))
+            # Stay open anyway
+            try:
+                while self.running:
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                pass
         finally:
             sock.close()
 

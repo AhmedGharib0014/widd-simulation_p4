@@ -219,6 +219,30 @@ def create_topology(use_bmv2=True, remote_controller=True):
     info("\n*** Access Point Information ***\n")
     info(f"    ap1: SSID=WIDD_Network, Channel=6\n")
 
+    # Print interface information for the attacker station
+    info("\n*** Attacker Interface Information ***\n")
+    try:
+        # Get interface names directly from the Mininet station object
+        attacker_intfs = list(attacker.intfs.values())
+        if attacker_intfs:
+            info("    Interfaces created for attacker station:\n")
+            for intf in attacker_intfs:
+                info(f"      - {intf.name} (MAC: {intf.MAC()}, IP: {intf.IP()})\n")
+
+            # The first wireless interface is what we need
+            wireless_intf = attacker_intfs[0].name
+            info(f"\n    ✓ ATTACKER INTERFACE: {wireless_intf}\n")
+            info(f"    ✓ MAC: {attacker_intfs[0].MAC()}\n")
+            info(f"    ✓ IP: {attacker_intfs[0].IP()}\n")
+            info(f"\n    NOTE: This interface exists in the attacker's network namespace\n")
+            info(f"    To run commands in this namespace, use:\n")
+            info(f"      mininet> attacker <command>\n")
+        else:
+            info("    Warning: No interfaces found for attacker station\n")
+
+    except Exception as e:
+        info(f"    Could not query attacker interfaces: {e}\n")
+
     return net
 
 

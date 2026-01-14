@@ -3,72 +3,34 @@
 # WIDD Multi-Terminal Demo Launcher
 #
 # Launches multiple xterm windows to visualize the complete WIDD system:
+#   - Terminal 0: Mininet-WiFi Network (with bmv2 P4 switch)
 #   - Terminal 1: OODA Controller (MOCC + KCSM) in server mode
 #   - Terminal 2: Attack CLI (interactive attack console)
 #   - Terminal 3: Packet Monitor (real-time flow visualization)
 #
 # Usage:
-#   ./demo_launcher.sh           # Interactive mode
-#   ./demo_launcher.sh --auto    # Auto-run demo
+#   ./demo_launcher.sh              # Smart mode (auto-detects if P4 needs recompilation)
+#   ./demo_launcher.sh --force-p4   # Force P4 recompilation
 #
-
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-MAGENTA='\033[0;35m'
-NC='\033[0m' # No Color
 
 # Project directory
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# PID file for Mininet process
+MININET_PID_FILE="/tmp/widd_mininet.pid"
+
 # Screen positions (adjust based on your screen resolution)
 # Format: geometry WIDTHxHEIGHT+X+Y
-TERM_CONTROLLER="120x35+0+0"      # Left: OODA Controller
-TERM_ATTACKER="100x25+850+0"      # Top-right: Attack CLI
-TERM_MONITOR="100x25+850+450"     # Bottom-right: Packet Monitor
+TERM_MININET="120x20+0+0"         # Top-left: Mininet Network
+TERM_CONTROLLER="120x35+0+300"    # Bottom-left: OODA Controller
+TERM_ATTACKER="120x35+850+0"      # Top-right: Attack CLI
+TERM_MONITOR="120x35+850+450"     # Bottom-right: Packet Monitor
 
-# XTerm colors and fonts
-XTERM_OPTS="-fa 'Monospace' -fs 10 -bg black"
-
-print_banner() {
-    echo -e "${CYAN}"
-    echo "╔═══════════════════════════════════════════════════════════════════╗"
-    echo "║                                                                   ║"
-    echo "║   ██╗    ██╗██╗██████╗ ██████╗     ██████╗ ███████╗███╗   ███╗   ║"
-    echo "║   ██║    ██║██║██╔══██╗██╔══██╗    ██╔══██╗██╔════╝████╗ ████║   ║"
-    echo "║   ██║ █╗ ██║██║██║  ██║██║  ██║    ██║  ██║█████╗  ██╔████╔██║   ║"
-    echo "║   ██║███╗██║██║██║  ██║██║  ██║    ██║  ██║██╔══╝  ██║╚██╔╝██║   ║"
-    echo "║   ╚███╔███╔╝██║██████╔╝██████╔╝    ██████╔╝███████╗██║ ╚═╝ ██║   ║"
-    echo "║    ╚══╝╚══╝ ╚═╝╚═════╝ ╚═════╝     ╚═════╝ ╚══════╝╚═╝     ╚═╝   ║"
-    echo "║                                                                   ║"
-    echo "║              Interactive Attack & Detection Demo                  ║"
-    echo "╚═══════════════════════════════════════════════════════════════════╝"
-    echo -e "${NC}"
-}
-
-check_requirements() {
-    echo -e "${YELLOW}[*] Checking requirements...${NC}"
-
-    # Check for xterm
-    if ! command -v xterm &> /dev/null; then
-        echo -e "${RED}[!] xterm not found. Install with: sudo apt install xterm${NC}"
-        exit 1
-    fi
-
-    # Check for Python3
-    if ! command -v python3 &> /dev/null; then
-        echo -e "${RED}[!] python3 not found${NC}"
-        exit 1
-    fi
-
-    echo -e "${GREEN}[+] Requirements check passed${NC}"
-}
+# XTerm colors and fonts - all terminals use the same settings
+XTERM_OPTS="-fa 'Monospace' -fs 10 -bg black -fg white"
 
 cleanup() {
-    echo -e "\n${YELLOW}[*] Cleaning up...${NC}"
+    echo "[*] Cleaning up..."
 
     # Kill all xterm windows we started
     pkill -f "xterm.*WIDD" 2>/dev/null || true
@@ -78,113 +40,270 @@ cleanup() {
     pkill -f "interactive_attack" 2>/dev/null || true
     pkill -f "packet_monitor" 2>/dev/null || true
 
-    echo -e "${GREEN}[+] Cleanup complete${NC}"
+    # Clean up Mininet network
+    echo "[*] Stopping Mininet network..."
+    if [ -f "$MININET_PID_FILE" ]; then
+        MININET_PID=$(cat "$MININET_PID_FILE")
+        if ps -p "$MININET_PID" > /dev/null 2>&1; then
+            sudo kill -TERM "$MININET_PID" 2>/dev/null || true
+            sleep 2
+            sudo kill -9 "$MININET_PID" 2>/dev/null || true
+        fi
+        rm -f "$MININET_PID_FILE"
+    fi
+
+    # Cleanup Mininet resources
+    sudo mn -c 2>/dev/null || true
+
+    # Kill bmv2 switch processes
+    sudo pkill -f "simple_switch" 2>/dev/null || true
+
+    echo "[+] Cleanup complete"
+
+    # Exit the script completely
+    exit 0
 }
 
 # Trap ctrl-c and cleanup
 trap cleanup EXIT INT TERM
 
+compile_p4() {
+    echo "[*] Checking P4 program..."
+
+    P4_SOURCE="$PROJECT_DIR/p4/widd.p4"
+    P4_JSON="$PROJECT_DIR/p4/widd.json"
+
+    # Check if JSON exists and is newer than source
+    if [ -f "$P4_JSON" ] && [ "$P4_JSON" -nt "$P4_SOURCE" ]; then
+        echo "[+] P4 JSON is up to date (no recompilation needed)"
+        return 0
+    fi
+
+    echo "[*] Compiling P4 program..."
+
+    # Check if P4 compiler is available
+    if ! command -v p4c &> /dev/null && ! command -v p4c-bm2-ss &> /dev/null; then
+        echo "[ERROR] P4 compiler (p4c or p4c-bm2-ss) not found!"
+        echo "        Install with: sudo apt install p4lang-bmv2 p4lang-p4c"
+        exit 1
+    fi
+
+    # Compile P4 to JSON
+    cd "$PROJECT_DIR/p4"
+    if make 2>&1 | tee /tmp/p4_compile.log; then
+        echo "[+] P4 program compiled successfully"
+
+        # Verify JSON was created
+        if [ ! -f "$P4_JSON" ]; then
+            echo "[ERROR] widd.json not found after compilation!"
+            echo "        Check /tmp/p4_compile.log for errors"
+            exit 1
+        fi
+    else
+        echo "[ERROR] P4 compilation failed! Check /tmp/p4_compile.log"
+        exit 1
+    fi
+
+    cd "$PROJECT_DIR"
+}
+
+launch_mininet() {
+    echo "[*] Launching Mininet-WiFi network with bmv2 P4 switch..."
+
+    # Check if running as root or with sudo
+    if [ "$EUID" -ne 0 ]; then
+        echo "[*] Mininet requires sudo privileges..."
+    fi
+
+    # Check if Mininet-WiFi is installed
+    if ! python3 -c "import mn_wifi" 2>/dev/null; then
+        echo "[ERROR] Mininet-WiFi not installed!"
+        echo "        Install with: sudo pip3 install mininet-wifi"
+        exit 1
+    fi
+
+    # Clean up any previous Mininet instances
+    sudo mn -c 2>/dev/null || true
+
+    # Launch Mininet in an xterm window
+    xterm -title "WIDD-Mininet-Network" \
+          -geometry $TERM_MININET \
+          $XTERM_OPTS \
+          -e "cd $PROJECT_DIR && sudo python3 topology/widd_topo.py; read -p 'Press Enter to close...'" &
+
+    MININET_PID=$!
+    echo $MININET_PID > "$MININET_PID_FILE"
+
+    echo "[+] Mininet network starting (PID: $MININET_PID)..."
+    echo "[*] Waiting for network to initialize (15 seconds)..."
+
+    # Wait for network to be ready
+    for i in {15..1}; do
+        echo -ne "    $i seconds remaining...\r"
+        sleep 1
+    done
+    echo ""
+
+    echo "[+] Mininet network is running and ready!"
+    echo "[*] Note: Attack CLI will run inside the attacker's network namespace"
+}
+
 launch_controller() {
-    echo -e "${BLUE}[*] Launching OODA Controller (Server Mode)...${NC}"
+    echo "[*] Launching OODA Controller (Server Mode)..."
 
     xterm -title "WIDD-OODA-Controller" \
           -geometry $TERM_CONTROLLER \
           $XTERM_OPTS \
-          -fg green \
           -e "cd $PROJECT_DIR && python3 start_server.py; read -p 'Press Enter to close...'" &
 
     sleep 3
-    echo -e "${GREEN}[+] OODA Controller started (listening on port 9999)${NC}"
+    echo "[+] OODA Controller started (listening on port 9999)"
 }
 
 launch_attacker() {
-    echo -e "${RED}[*] Launching Attack CLI...${NC}"
+    echo "[*] Launching Attack CLI using Mininet's node execution..."
 
-    xterm -title "WIDD-Attack-CLI" \
-          -geometry $TERM_ATTACKER \
-          $XTERM_OPTS \
-          -fg red \
-          -e "cd $PROJECT_DIR && python3 interactive_attack.py; read -p 'Press Enter to close...'" &
+    # The attacker interface will be attacker-wlan0 inside its namespace
+    ATTACK_IFACE="attacker-wlan0"
 
-    sleep 2
-    echo -e "${GREEN}[+] Attack CLI launched${NC}"
+    # Find the attacker process PID to get its namespace
+    echo "[*] Finding attacker node namespace..."
+
+    # Use mnexec to run command in the attacker's namespace
+    # Mininet nodes run bash shells, we need to execute in that context
+    ATTACKER_PID=$(pgrep -f "mininet:attacker" | head -1)
+
+    if [ -z "$ATTACKER_PID" ]; then
+        echo "[*] Trying alternative method to find attacker process..."
+        # Alternative: use ps to find bash process
+        ATTACKER_PID=$(ps aux | grep -E "bash.*mininet.*attacker" | grep -v grep | awk '{print $2}' | head -1)
+    fi
+
+    if [ -n "$ATTACKER_PID" ]; then
+        echo "[+] Found attacker namespace (PID: $ATTACKER_PID)"
+
+        # Use nsenter to enter the network namespace
+        xterm -title "WIDD-Attack-CLI" \
+              -geometry $TERM_ATTACKER \
+              $XTERM_OPTS \
+              -e "cd $PROJECT_DIR && sudo nsenter -t $ATTACKER_PID -n python3 interactive_attack.py --interface $ATTACK_IFACE; read -p 'Press Enter to close...'" &
+
+        sleep 2
+        echo "[+] Attack CLI launched in attacker namespace (interface: $ATTACK_IFACE)"
+    else
+        echo "[WARNING] Could not find attacker process automatically"
+        echo "[*] Launching manual execution terminal..."
+
+        # Launch terminal with instructions
+        xterm -title "WIDD-Attack-CLI-MANUAL" \
+              -geometry $TERM_ATTACKER \
+              $XTERM_OPTS \
+              -e "echo 'Could not auto-launch. Run from Mininet CLI:'; echo 'mininet> attacker python3 $PROJECT_DIR/interactive_attack.py --interface attacker-wlan0'; bash" &
+
+        echo "[!] Attack CLI needs manual start from Mininet terminal"
+        echo "[!] In Mininet CLI, type: attacker python3 interactive_attack.py --interface attacker-wlan0"
+    fi
 }
 
 launch_monitor() {
-    echo -e "${MAGENTA}[*] Launching Packet Monitor...${NC}"
+    echo "[*] Launching Packet Monitor..."
 
     xterm -title "WIDD-Packet-Monitor" \
           -geometry $TERM_MONITOR \
           $XTERM_OPTS \
-          -fg magenta \
-          -e "cd $PROJECT_DIR && python3 packet_monitor.py --simulate; read -p 'Press Enter to close...'" &
+          -e "cd $PROJECT_DIR && python3 packet_monitor.py; read -p 'Press Enter to close...'" &
 
     sleep 1
-    echo -e "${GREEN}[+] Packet Monitor launched${NC}"
+    echo "[+] Packet Monitor launched (listening for events)"
 }
 
-show_help() {
-    echo ""
-    echo -e "${CYAN}╔═══════════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}║                        DEMO LAYOUT                                ║${NC}"
-    echo -e "${CYAN}╠═══════════════════════════════════════════════════════════════════╣${NC}"
-    echo -e "${CYAN}║                                                                   ║${NC}"
-    echo -e "${CYAN}║  ┌─────────────────────┐  ┌─────────────────────┐                ║${NC}"
-    echo -e "${CYAN}║  │                     │  │                     │                ║${NC}"
-    echo -e "${CYAN}║  │   OODA Controller   │  │    Attack CLI       │                ║${NC}"
-    echo -e "${CYAN}║  │   (Green text)      │  │    (Red text)       │                ║${NC}"
-    echo -e "${CYAN}║  │                     │  │                     │                ║${NC}"
-    echo -e "${CYAN}║  │   Shows:            │  ├─────────────────────┤                ║${NC}"
-    echo -e "${CYAN}║  │   - OODA phases     │  │                     │                ║${NC}"
-    echo -e "${CYAN}║  │   - MOCC results    │  │   Packet Monitor    │                ║${NC}"
-    echo -e "${CYAN}║  │   - KCSM states     │  │   (Magenta text)    │                ║${NC}"
-    echo -e "${CYAN}║  │   - Attack alerts   │  │                     │                ║${NC}"
-    echo -e "${CYAN}║  │                     │  │                     │                ║${NC}"
-    echo -e "${CYAN}║  └─────────────────────┘  └─────────────────────┘                ║${NC}"
-    echo -e "${CYAN}║                                                                   ║${NC}"
-    echo -e "${CYAN}╚═══════════════════════════════════════════════════════════════════╝${NC}"
-    echo ""
-    echo -e "${YELLOW}HOW TO USE:${NC}"
-    echo ""
-    echo -e "  1. ${GREEN}OODA Controller${NC} window shows the detection system"
-    echo -e "     - Watch for OBSERVE/ORIENT/DECIDE/ACT phases"
-    echo -e "     - Green = legitimate traffic, Red = attacks"
-    echo ""
-    echo -e "  2. ${RED}Attack CLI${NC} window lets you launch attacks"
-    echo -e "     - Type 'help' to see available commands"
-    echo -e "     - Try: demo1, demo2, demo3, demo4"
-    echo -e "     - Or: deauth sta1 5, evil_twin, auth_flood"
-    echo ""
-    echo -e "  3. ${MAGENTA}Packet Monitor${NC} shows packet flow visualization"
-    echo ""
-    echo -e "${CYAN}ATTACK COMMANDS:${NC}"
-    echo -e "  deauth sta1 5     - Send 5 spoofed deauth frames"
-    echo -e "  evil_twin         - Broadcast evil twin beacon"
-    echo -e "  auth_flood 12     - Send 12 auth flood frames"
-    echo -e "  demo_all          - Run all attack demos automatically"
-    echo ""
-    echo -e "${GREEN}Press Ctrl+C to stop all terminals and exit${NC}"
+check_prerequisites() {
+    echo "[*] Checking prerequisites..."
+
+    # Check for required commands
+    local missing_deps=()
+
+    if ! command -v xterm &> /dev/null; then
+        missing_deps+=("xterm")
+    fi
+
+    if ! command -v simple_switch &> /dev/null; then
+        missing_deps+=("simple_switch (bmv2)")
+    fi
+
+    if ! python3 -c "import mn_wifi" 2>/dev/null; then
+        missing_deps+=("mininet-wifi (pip3 install mininet-wifi)")
+    fi
+
+    if ! python3 -c "import scapy" 2>/dev/null; then
+        missing_deps+=("scapy (pip3 install scapy)")
+    fi
+
+    if [ ${#missing_deps[@]} -ne 0 ]; then
+        echo "[ERROR] Missing dependencies:"
+        for dep in "${missing_deps[@]}"; do
+            echo "  - $dep"
+        done
+        exit 1
+    fi
+
+    echo "[+] All prerequisites satisfied"
 }
 
 main() {
-    print_banner
-    check_requirements
-
     echo ""
-    echo -e "${YELLOW}[*] Starting WIDD Interactive Demo...${NC}"
+    echo "========================================"
+    echo "  WIDD Interactive Demo Launcher"
+    echo "========================================"
     echo ""
 
-    # Launch all terminals
+    # Parse command line arguments
+    FORCE_P4_COMPILE=false
+    if [[ "$*" == *"--force-p4"* ]]; then
+        FORCE_P4_COMPILE=true
+        echo "[*] Forcing P4 recompilation (--force-p4 flag)"
+    fi
+
+    # Check prerequisites
+    check_prerequisites
+
+    # Compile P4 program (smart compilation - only if needed)
+    if [ "$FORCE_P4_COMPILE" = true ]; then
+        # Force recompilation by removing JSON first
+        rm -f "$PROJECT_DIR/p4/widd.json"
+        compile_p4
+    else
+        # Smart compilation - only recompile if source changed
+        compile_p4
+    fi
+
+  
+
+    # Launch OODA Controller first (it needs to be ready for packets)
     launch_controller
+
+    # Give controller time to start listening
+    echo "[*] Waiting for OODA Controller to initialize (3 seconds)..."
+    sleep 3
+
+
+    # Launch Mininet network
+    launch_mininet
+
+    # Give Mininet extra time to fully stabilize
+    echo "[*] Waiting for Mininet network to stabilize (5 seconds)..."
+    sleep 5
+
+    # Launch monitoring and attack terminals
     launch_attacker
     launch_monitor
 
-    show_help
-
     echo ""
-    echo -e "${GREEN}[+] All terminals launched!${NC}"
+    echo "========================================"
+    echo "  All components launched!"
+    echo "========================================"
+    echo "Press Ctrl+C to stop all components."
     echo ""
-    echo -e "${CYAN}Demo is running. Press Ctrl+C to stop.${NC}"
 
     # Wait for user to stop
     while true; do

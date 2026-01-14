@@ -143,19 +143,41 @@ class InteractiveAttackCLI:
 
     def initialize(self):
         """Initialize the attack generator."""
+        if not self.interface:
+            print(colored("\n  ERROR: Network interface is required!", Colors.RED + Colors.BOLD))
+            print(colored("  This CLI sends real 802.11 packets through mininet-wifi.", Colors.YELLOW))
+            print(colored("  Usage: python3 interactive_attack.py --interface <iface>\n", Colors.DIM))
+            print(colored("  Example interfaces:", Colors.CYAN))
+            print(colored("    - attacker-wlan0 (mininet-wifi attacker station)", Colors.WHITE))
+            print(colored("    - wlan0 (physical wireless adapter)", Colors.WHITE))
+            print()
+            sys.exit(1)
+
+        # Check if interface exists
+        import subprocess
+        try:
+            result = subprocess.run(['ip', 'link', 'show', self.interface],
+                                  capture_output=True, text=True, timeout=2)
+            if result.returncode != 0:
+                print(colored(f"\n  ERROR: Network interface '{self.interface}' not found!", Colors.RED + Colors.BOLD))
+                print(colored(f"  The mininet-wifi network may not be running yet.", Colors.YELLOW))
+                print(colored(f"\n  To fix this:", Colors.CYAN))
+                print(colored(f"    1. Make sure the Mininet network is running", Colors.WHITE))
+                print(colored(f"    2. Check the Mininet terminal for errors", Colors.WHITE))
+                print(colored(f"    3. Verify interface exists with: ip link show", Colors.WHITE))
+                print()
+                sys.exit(1)
+        except Exception as e:
+            print(colored(f"\n  WARNING: Could not verify interface: {e}", Colors.YELLOW))
+
         self.attack_gen = AttackGenerator(
             interface=self.interface,
             wap_mac=self.wap_mac,
             wap_bssid=self.wap_bssid
         )
 
-        if self.interface:
-            print(colored(f"  [+] Network interface: {self.interface}", Colors.GREEN))
-            print(colored(f"  [+] Attack packets will be sent via Scapy", Colors.GREEN))
-        else:
-            print(colored("  [!] No interface specified - packets won't be sent!", Colors.YELLOW))
-            print(colored("      Use: python3 interactive_attack.py --interface <iface>", Colors.DIM))
-
+        print(colored(f"  [+] Network interface: {self.interface}", Colors.GREEN))
+        print(colored(f"  [+] Sending real 802.11 packets via Scapy", Colors.GREEN))
         print(colored(f"  [*] Target AP: {self.wap_mac}", Colors.CYAN))
         print(colored(f"  [*] Attacker MAC: {self.attacker_mac}", Colors.CYAN))
 
@@ -423,12 +445,8 @@ class InteractiveAttackCLI:
 
         while True:
             try:
-                # Prompt with network mode status
-                if self.interface:
-                    status = colored("[NETWORK]", Colors.GREEN)
-                else:
-                    status = colored("[DRY-RUN]", Colors.YELLOW)
-
+                # Prompt with network interface name
+                status = colored(f"[{self.interface}]", Colors.GREEN)
                 prompt = status + " " + colored("attack", Colors.RED) + colored("> ", Colors.WHITE)
                 cmd_input = input(prompt).strip()
 
@@ -511,8 +529,8 @@ if __name__ == '__main__':
         description='WIDD Interactive Attack CLI - Network Mode',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument('--interface', '-i', type=str, default=None,
-                       help='Network interface to send packets (e.g., attacker-wlan0)')
+    parser.add_argument('--interface', '-i', type=str, required=True,
+                       help='Network interface to send packets (REQUIRED, e.g., attacker-wlan0)')
 
     args = parser.parse_args()
 

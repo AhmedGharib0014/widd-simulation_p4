@@ -14,7 +14,6 @@ import sys
 import time
 import argparse
 from controller.ooda_controller import OODAController
-from controller.simulation_server import SimulationServer
 from controller.logger import logger
 
 
@@ -45,8 +44,6 @@ Examples:
                         help='Client 2 base RSSI (default: -55)')
     parser.add_argument('--rssi-attacker', type=int, default=-70,
                         help='Attacker base RSSI (default: -70)')
-    parser.add_argument('--port', type=int, default=9999,
-                        help='Server port for attack CLI (default: 9999)')
 
     args = parser.parse_args()
 
@@ -78,26 +75,22 @@ Examples:
     status = controller.mocc.get_training_status(args.client1)
     logger.system_info(f"MOCC training complete: {status['samples']} samples, trained={status['trained']}")
 
-    # Start simulation server
+    # Ready to receive packets from P4 switch
     print("\n" + "="*70)
-    print("  SERVER MODE - READY")
+    print("  OODA CONTROLLER READY")
     print("="*70)
-    print(f"  Listening for attack CLI connections on port {args.port}")
-    print(f"  Monitor events broadcast on port 9998")
-    print(f"  Press Ctrl+C to stop")
+    print("  Waiting for 802.11 packets from P4 switch (Thrift port 9090)")
+    print("  Send attacks via mininet-wifi using interactive_attack.py")
+    print("  Press Ctrl+C to stop")
     print("="*70 + "\n")
-
-    server = SimulationServer(controller)
-    server.start()
 
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
         print("\n")
-        logger.system_stop("OODA Controller Server")
+        logger.system_stop("OODA Controller")
         logger.print_stats()
-        server.stop()
         sys.exit(0)
 
 
