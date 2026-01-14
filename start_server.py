@@ -6,25 +6,35 @@ This script initializes the OODA Controller and starts the SimulationServer
 to accept connections from the Attack CLI and Packet Monitor.
 
 Usage:
-    python3 start_server.py
-    python3 start_server.py --help
+    sudo python3 start_server.py
+    sudo python3 start_server.py --help
+
+Note: Requires root privileges for packet capture.
 """
 
 import sys
 import time
+import os
 import argparse
 from controller.ooda_controller import OODAController
 from controller.logger import logger
+from controller.packet_receiver import PacketReceiver
 
 
 def main():
+    # Check if running as root
+    if os.geteuid() != 0:
+        print("ERROR: This script requires root privileges for packet capture.")
+        print("Please run with: sudo python3 start_server.py")
+        sys.exit(1)
+
     parser = argparse.ArgumentParser(
         description='WIDD OODA Controller - Server Mode',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python3 start_server.py
-  python3 start_server.py --ssid MyNetwork --bssid 00:11:22:33:44:55
+  sudo python3 start_server.py
+  sudo python3 start_server.py --ssid MyNetwork --bssid 00:11:22:33:44:55
         """
     )
 
@@ -75,11 +85,125 @@ Examples:
     status = controller.mocc.get_training_status(args.client1)
     logger.system_info(f"MOCC training complete: {status['samples']} samples, trained={status['trained']}")
 
+    # Define callback to process received packets
+    def handle_packet(frame_info):
+        """Process received WIDD frame through OODA controller."""
+        try:
+            # Check if frame parsing had errors
+            if 'error' in frame_info:
+                logger.system_info(f"[PacketReceiver] Error parsing frame: {frame_info['error']}")
+                return
+
+            # Log received frame
+            frame_type = frame_info.get('frame_type', 'Unknown')
+            subtype = frame_info.get('subtype', 'Unknown')
+            src_mac = frame_info.get('src_mac', 'Unknown')
+            rssi = frame_info.get('rssi', 0)
+
+            print(f"[PacketReceiver] Received: {frame_type}/{subtype} from {src_mac} RSSI={rssi}dBm")
+
+            # Map frame type to controller's frame type format
+            frame_type_map = {
+                'Management': 'mgmt',
+                'Control': 'ctrl',
+                'Data': 'data'
+            }
+
+            # Map subtype to controller's subtype format
+            subtype_map = {
+                'Deauth': 'deauth',
+                'Disassoc': 'disassoc',
+                'Auth': 'auth',
+                'Assoc Req': 'assoc_req',
+                'Beacon': 'beacon'
+            }
+
+            # Convert to controller format
+            ctrl_frame_type = frame_type_map.get(frame_type, 'data')
+            ctrl_subtype = subtype_map.get(subtype, subtype.lower())
+
+            # Update device RSSI in MOCC
+            controller.mocc.update_device_rssi(src_mac, rssi)
+
+            # Process frame through OODA controller
+            # Extract RF features for MOCC
+            rf_features = {
+                'rssi': rssi,
+                'phase': frame_info.get('phase', 0),
+                'pilot': frame_info.get('pilot', 0),
+                'mag': frame_info.get('mag', 0)
+            }
+
+            # If it's a deauth frame, process through full OODA pipeline
+            if subtype == 'Deauth':
+                logger.attack_detected(f"Deauth frame from {src_mac} (RSSI={rssi}dBm)")
+
+                # Check MOCC for RF fingerprint anomaly
+                if controller.mocc.is_device_registered(src_mac):
+                    is_legitimate = controller.mocc.verify_device(src_mac, rf_features)
+                    if not is_legitimate:
+                        logger.attack_detected(f"RF fingerprint mismatch for {src_mac}!")
+                        # KCSM would trigger mitigation here
+                        controller.kcsm.report_attack(src_mac, 'rf_spoofing')
+                else:
+                    logger.attack_detected(f"Unknown device {src_mac} sending deauth!")
+                    controller.kcsm.report_attack(src_mac, 'unknown_deauth')
+
+            # Update MOCC training data for legitimate clients
+            elif src_mac in [args.client1, args.client2]:
+                controller.mocc.add_sample(src_mac, rf_features)
+
+        except Exception as e:
+            logger.system_info(f"[PacketReceiver] Error processing frame: {e}")
+            import traceback
+            traceback.print_exc()
+
+    # Wait for network interface to be available
+    # NOTE: We listen on the CPU port veth interface created by bmv2
+    # This receives Packet-In messages from the P4 switch
+    import subprocess
+    interface = 's1-cpu-h'  # CPU port interface for P4 Packet-In
+    logger.system_info(f"Checking for P4 CPU port interface {interface}...")
+
+    max_retries = 30
+    for i in range(max_retries):
+        try:
+            result = subprocess.run(['ip', 'link', 'show', interface],
+                                  capture_output=True, text=True, timeout=2)
+            if result.returncode == 0:
+                logger.system_info(f"Interface {interface} found!")
+                break
+        except Exception:
+            pass
+
+        if i == 0:
+            logger.system_info(f"Waiting for {interface} to be available...")
+
+        time.sleep(1)
+    else:
+        logger.system_info(f"WARNING: Interface {interface} not found after {max_retries} seconds")
+        logger.system_info("Available interfaces:")
+        try:
+            result = subprocess.run(['ip', 'link', 'show'], capture_output=True, text=True)
+            for line in result.stdout.split('\n'):
+                if ':' in line and not line.startswith(' '):
+                    logger.system_info(f"  {line.strip()}")
+        except Exception as e:
+            logger.system_info(f"Could not list interfaces: {e}")
+
+        logger.system_info("\nTrying to continue anyway...")
+
+    # Create and start packet receiver
+    logger.system_info(f"Starting packet receiver on {interface}...")
+    receiver = PacketReceiver(interface=interface, callback=handle_packet)
+    receiver.start()
+
     # Ready to receive packets from P4 switch
     print("\n" + "="*70)
     print("  OODA CONTROLLER READY")
     print("="*70)
-    print("  Waiting for 802.11 packets from P4 switch (Thrift port 9090)")
+    print(f"  Listening for P4 Packet-In on CPU port: {interface}")
+    print("  P4 switch filters management frames and sends via Packet-In")
     print("  Send attacks via mininet-wifi using interactive_attack.py")
     print("  Press Ctrl+C to stop")
     print("="*70 + "\n")
@@ -89,6 +213,8 @@ Examples:
             time.sleep(1)
     except KeyboardInterrupt:
         print("\n")
+        logger.system_info("Stopping packet receiver...")
+        receiver.stop()
         logger.system_stop("OODA Controller")
         logger.print_stats()
         sys.exit(0)

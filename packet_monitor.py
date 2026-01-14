@@ -344,17 +344,27 @@ class PacketFlowMonitor:
         try:
             sock.bind(('127.0.0.1', port))
             sock.settimeout(1.0)
-            print(colored(f"  Listening for packets on port {port}...", Colors.CYAN))
-            print(colored(f"  Waiting for events from OODA Controller...\n", Colors.DIM))
+            print(colored(f"  [DEBUG] Socket bound to 127.0.0.1:{port}", Colors.CYAN))
+            print(colored(f"  [DEBUG] Listening for packets on port {port}...", Colors.CYAN))
+            print(colored(f"  [DEBUG] Waiting for events from OODA Controller...\n", Colors.DIM))
 
+            heartbeat_counter = 0
             while self.running:
                 try:
                     data, addr = sock.recvfrom(4096)
+                    print(colored(f"  [DEBUG] Received {len(data)} bytes from {addr}", Colors.GREEN))
                     event = json.loads(data.decode())
+                    print(colored(f"  [DEBUG] Parsed event: {event}", Colors.GREEN))
                     self.add_event(event)
                 except socket.timeout:
+                    # Print heartbeat every 10 seconds
+                    heartbeat_counter += 1
+                    if heartbeat_counter % 10 == 0:
+                        print(colored(f"  [DEBUG] Still listening... ({heartbeat_counter}s)", Colors.DIM))
                     continue
-                except json.JSONDecodeError:
+                except json.JSONDecodeError as e:
+                    print(colored(f"  [DEBUG] JSON decode error: {e}", Colors.RED))
+                    print(colored(f"  [DEBUG] Raw data: {data}", Colors.RED))
                     continue
                 except KeyboardInterrupt:
                     break

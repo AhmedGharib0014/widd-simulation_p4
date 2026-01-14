@@ -55,6 +55,27 @@ class P4Switch(Switch):
         """Start bmv2 switch."""
         info(f"*** Starting bmv2 switch {self.name} ***\n")
 
+        # Create veth pair for CPU port communication
+        # Note: Linux interface names limited to 15 chars, so use short names
+        cpu_veth_host = f'{self.name}-cpu-h'
+        cpu_veth_switch = f'{self.name}-cpu-s'
+
+        info(f"*** Creating CPU port veth pair: {cpu_veth_host} <-> {cpu_veth_switch} ***\n")
+
+        # Clean up old veth pairs if they exist
+        subprocess.run(['ip', 'link', 'del', cpu_veth_host],
+                      stderr=subprocess.DEVNULL, check=False)
+
+        # Create new veth pair
+        subprocess.run(['ip', 'link', 'add', cpu_veth_host,
+                       'type', 'veth', 'peer', 'name', cpu_veth_switch], check=True)
+
+        # Bring both ends up
+        subprocess.run(['ip', 'link', 'set', cpu_veth_host, 'up'], check=True)
+        subprocess.run(['ip', 'link', 'set', cpu_veth_switch, 'up'], check=True)
+
+        info(f"*** CPU port veth created: {cpu_veth_host} ***\n")
+
         # Build interface list
         ifaces = []
         for port, intf in self.intfs.items():
@@ -78,8 +99,8 @@ class P4Switch(Switch):
         if self.log_console:
             cmd.extend(['--log-console'])
 
-        # Add CPU port for Packet-In/Out
-        cmd.extend(['--', '--cpu-port', '255'])
+        # Add CPU port for Packet-In/Out - use the veth interface
+        cmd.extend(['-i', f'255@{cpu_veth_switch}'])
 
         info(f"*** bmv2 command: {' '.join(cmd)} ***\n")
 
@@ -90,6 +111,8 @@ class P4Switch(Switch):
             self.bmv2_pid = self.bmv2_proc.pid
 
         info(f"*** bmv2 started with PID {self.bmv2_pid}, log: {log_file} ***\n")
+        info(f"*** Controller should sniff on interface: {cpu_veth_host} ***\n")
+
         time.sleep(1)  # Give bmv2 time to start
 
     def stop(self):
@@ -100,6 +123,12 @@ class P4Switch(Switch):
                 os.kill(self.bmv2_pid, 9)
             except OSError:
                 pass
+
+        # Clean up CPU veth pair
+        cpu_veth_host = f'{self.name}-cpu-h'
+        subprocess.run(['ip', 'link', 'del', cpu_veth_host],
+                      stderr=subprocess.DEVNULL, check=False)
+
         Switch.stop(self)
 
 

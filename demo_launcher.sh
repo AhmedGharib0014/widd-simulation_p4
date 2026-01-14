@@ -154,10 +154,10 @@ launch_controller() {
     xterm -title "WIDD-OODA-Controller" \
           -geometry $TERM_CONTROLLER \
           $XTERM_OPTS \
-          -e "cd $PROJECT_DIR && python3 start_server.py; read -p 'Press Enter to close...'" &
+          -e "cd $PROJECT_DIR && sudo python3 start_server.py; read -p 'Press Enter to close...'" &
 
     sleep 3
-    echo "[+] OODA Controller started (listening on port 9999)"
+    echo "[+] OODA Controller started (requires sudo for packet capture)"
 }
 
 launch_attacker() {
@@ -277,22 +277,21 @@ main() {
         compile_p4
     fi
 
-  
-
-    # Launch OODA Controller first (it needs to be ready for packets)
-    launch_controller
-
-    # Give controller time to start listening
-    echo "[*] Waiting for OODA Controller to initialize (3 seconds)..."
-    sleep 3
 
 
-    # Launch Mininet network
+    # Launch Mininet network FIRST (creates s1-eth1 interface)
     launch_mininet
 
     # Give Mininet extra time to fully stabilize
     echo "[*] Waiting for Mininet network to stabilize (5 seconds)..."
     sleep 5
+
+    # Launch OODA Controller AFTER network is ready
+    launch_controller
+
+    # Give controller time to start listening
+    echo "[*] Waiting for OODA Controller to initialize (3 seconds)..."
+    sleep 3
 
     # Launch monitoring and attack terminals
     launch_attacker
