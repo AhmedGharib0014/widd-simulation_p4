@@ -203,6 +203,38 @@ def create_topology(use_bmv2=True, remote_controller=True):
     ap1.start([c0])
     s1.start([c0])
 
+    # Configure AP to mirror traffic from wireless to ethernet
+    info("*** Configuring AP traffic mirroring ***\n")
+    # Get the wireless and ethernet interface names
+    ap_wlan = None
+    ap_eth = None
+    for intf in ap1.intfs.values():
+        if 'wlan' in intf.name:
+            ap_wlan = intf.name
+        elif 'eth' in intf.name:
+            ap_eth = intf.name
+
+    if ap_wlan and ap_eth:
+        info(f"    Mirroring traffic: {ap_wlan} -> {ap_eth}\n")
+
+        # Method 1: Use tc (traffic control) to mirror ingress traffic
+        # Delete any existing qdiscs
+        ap1.cmd(f'tc qdisc del dev {ap_wlan} ingress 2>/dev/null || true')
+
+        # Create ingress qdisc on wireless interface
+        ap1.cmd(f'tc qdisc add dev {ap_wlan} ingress')
+
+        # Mirror all packets from wlan to eth using mirred action
+        ap1.cmd(f'tc filter add dev {ap_wlan} parent ffff: protocol all u32 match u32 0 0 action mirred egress redirect dev {ap_eth}')
+
+        info(f"    Traffic mirroring configured using tc\n")
+
+        # Verify tc rules
+        result = ap1.cmd(f'tc filter show dev {ap_wlan} parent ffff:')
+        info(f"    TC filter status:\n{result}")
+    else:
+        info(f"    Warning: Could not find wireless and ethernet interfaces for mirroring\n")
+
     info("*** Network is ready ***\n")
     info("*** Topology: ***\n")
     info("    sta1 (00:00:00:00:00:01) ---\\\n")
@@ -218,6 +250,18 @@ def create_topology(use_bmv2=True, remote_controller=True):
 
     info("\n*** Access Point Information ***\n")
     info(f"    ap1: SSID=WIDD_Network, Channel=6\n")
+
+    # Print AP interfaces
+    info("    ap1 interfaces:\n")
+    for intf in ap1.intfs.values():
+        info(f"      - {intf.name} (MAC: {intf.MAC()})\n")
+
+    # Print switch interfaces
+    info("\n*** Switch Information ***\n")
+    info(f"    s1: bmv2 P4 switch\n")
+    info("    s1 interfaces:\n")
+    for intf in s1.intfs.values():
+        info(f"      - {intf.name} (MAC: {intf.MAC()})\n")
 
     # Print interface information for the attacker station
     info("\n*** Attacker Interface Information ***\n")
