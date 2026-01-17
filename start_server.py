@@ -88,6 +88,9 @@ Examples:
     # Define callback to process received packets
     def handle_packet(frame_info):
         """Process received WIDD frame through OODA controller."""
+        from controller.switch_interface import PacketInEvent
+        from controller.mocc import RFFeatures
+
         try:
             # Check if frame parsing had errors
             if 'error' in frame_info:
@@ -102,56 +105,52 @@ Examples:
 
             print(f"[PacketReceiver] Received: {frame_type}/{subtype} from {src_mac} RSSI={rssi}dBm")
 
-            # Map frame type to controller's frame type format
-            frame_type_map = {
-                'Management': 'mgmt',
-                'Control': 'ctrl',
-                'Data': 'data'
-            }
+            # Create a mock PacketInEvent from frame_info to use controller's OODA pipeline
+            # The controller's _handle_packet_in expects a PacketInEvent with raw_packet
+            # But since we already parsed the packet, we create the event with parsed values
+            class ParsedPacketInEvent:
+                """Wrapper to pass parsed frame_info to controller's _handle_packet_in."""
+                def __init__(self, frame_info):
+                    self.reason = frame_info.get('cpu_reason', 0)
+                    self.orig_port = frame_info.get('cpu_orig_port', 0)
+                    self.rssi = frame_info.get('rssi', 0)
+                    self.payload = frame_info.get('raw_payload', b'')
+                    self.frame_info = frame_info  # Store parsed info
 
-            # Map subtype to controller's subtype format
-            subtype_map = {
-                'Deauth': 'deauth',
-                'Disassoc': 'disassoc',
-                'Auth': 'auth',
-                'Assoc Req': 'assoc_req',
-                'Beacon': 'beacon'
-            }
+            event = ParsedPacketInEvent(frame_info)
 
-            # Convert to controller format
-            ctrl_frame_type = frame_type_map.get(frame_type, 'data')
-            ctrl_subtype = subtype_map.get(subtype, subtype.lower())
-
-            # Update device RSSI in MOCC
-            controller.mocc.update_device_rssi(src_mac, rssi)
-
-            # Process frame through OODA controller
             # Extract RF features for MOCC
-            rf_features = {
-                'rssi': rssi,
-                'phase': frame_info.get('phase', 0),
-                'pilot': frame_info.get('pilot', 0),
-                'mag': frame_info.get('mag', 0)
-            }
+            rf_features = RFFeatures(
+                rssi=rssi,
+                phase_offset=frame_info.get('phase', 0),
+                pilot_offset=frame_info.get('pilot', 0),
+                mag_squared=frame_info.get('mag', 0)
+            )
 
-            # If it's a deauth frame, process through full OODA pipeline
-            if subtype == 'Deauth':
-                logger.attack_detected(f"Deauth frame from {src_mac} (RSSI={rssi}dBm)")
+            # Map cpu_reason to CPU_REASON constants
+            from controller.switch_interface import (
+                CPU_REASON_DEAUTH, CPU_REASON_AUTH, CPU_REASON_ASSOC,
+                CPU_REASON_BEACON, CPU_REASON_DISASSOC, CPU_REASON_DATA
+            )
 
-                # Check MOCC for RF fingerprint anomaly
-                if controller.mocc.is_device_registered(src_mac):
-                    is_legitimate = controller.mocc.verify_device(src_mac, rf_features)
-                    if not is_legitimate:
-                        logger.attack_detected(f"RF fingerprint mismatch for {src_mac}!")
-                        # KCSM would trigger mitigation here
-                        controller.kcsm.report_attack(src_mac, 'rf_spoofing')
-                else:
-                    logger.attack_detected(f"Unknown device {src_mac} sending deauth!")
-                    controller.kcsm.report_attack(src_mac, 'unknown_deauth')
+            cpu_reason = frame_info.get('cpu_reason', 0)
 
-            # Update MOCC training data for legitimate clients
-            elif src_mac in [args.client1, args.client2]:
-                controller.mocc.add_sample(src_mac, rf_features)
+            # Process through controller's OODA pipeline based on CPU reason
+            if cpu_reason == CPU_REASON_DEAUTH or subtype == 'Deauth':
+                controller._process_deauth_from_frame_info(src_mac, rf_features, frame_info)
+            elif cpu_reason == CPU_REASON_DISASSOC or subtype == 'Disassoc':
+                controller._process_disassoc_from_frame_info(src_mac, rf_features, frame_info)
+            elif cpu_reason == CPU_REASON_AUTH or subtype == 'Auth':
+                controller._process_auth_from_frame_info(src_mac, frame_info)
+            elif cpu_reason == CPU_REASON_ASSOC or subtype == 'Assoc Req':
+                controller._process_assoc_from_frame_info(src_mac, frame_info)
+            elif cpu_reason == CPU_REASON_BEACON or subtype == 'Beacon':
+                controller._process_beacon_from_frame_info(frame_info.get('bssid', ''), frame_info)
+            elif cpu_reason == CPU_REASON_DATA or frame_type == 'Data':
+                controller._process_data_from_frame_info(src_mac, rf_features, frame_info)
+            else:
+                # Unknown frame type, log and skip
+                print(f"[PacketReceiver] Unknown frame type: cpu_reason={cpu_reason}, subtype={subtype}")
 
         except Exception as e:
             logger.system_info(f"[PacketReceiver] Error processing frame: {e}")

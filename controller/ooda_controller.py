@@ -169,14 +169,15 @@ class OODAController:
             eth_src = payload[6:12]
             eth_type = struct.unpack('!H', payload[12:14])[0]
 
-            # Parse 802.11 Frame Control (2 bytes, little-endian in real 802.11)
+            # Parse 802.11 Frame Control (2 bytes, big-endian from P4)
             fc_bytes = payload[WIFI_FC_OFFSET:WIFI_FC_OFFSET + 2]
             fc = struct.unpack('!H', fc_bytes)[0]
 
             # Extract fields from frame control
-            # Format: protocol(2) | type(2) | subtype(4) | flags(8)
-            frame_type = (fc >> 2) & 0x3
-            subtype = (fc >> 4) & 0xF
+            # P4 format (big-endian): protocol(2) | type(2) | subtype(4) | flags(8)
+            # Bits [15:14] = protocolVersion, [13:12] = frameType, [11:8] = subType, [7:0] = flags
+            frame_type = (fc >> 12) & 0x3
+            subtype = (fc >> 8) & 0xF
 
             # Parse 802.11 addresses
             addr_start = WIFI_ADDR_OFFSET
@@ -404,6 +405,141 @@ class OODAController:
         """
         # TODO: Implement actual packet injection via CPU port
         # For now, the logging is done in the caller
+
+    # =========================================================================
+    # Methods to process frames from frame_info (used by PacketReceiver callback)
+    # =========================================================================
+
+    def _process_deauth_from_frame_info(self, source_mac: str, rf_features: RFFeatures, frame_info: dict):
+        """Process deauthentication frame from parsed frame_info."""
+        self.stats['deauth_frames'] += 1
+
+        # === OBSERVE ===
+        logger.ooda_observe("DEAUTH", source_mac, {
+            'rssi': rf_features.rssi,
+            'phase': rf_features.phase_offset
+        })
+
+        # === ORIENT: Check device identity using MOCC ===
+        prob, is_legitimate = self.mocc.identify(source_mac, rf_features)
+        logger.ooda_orient_mocc(source_mac, prob, is_legitimate)
+
+        # Log attack detection at ORIENT phase
+        if not is_legitimate:
+            logger.attack_deauth(
+                src_mac="UNKNOWN",
+                target_mac=source_mac,
+                spoofed=True,
+                count=self.stats['deauth_frames']
+            )
+
+        # === DECIDE: Update KCSM state machine ===
+        attack, should_drop = self.kcsm.process_deauth(source_mac, is_legitimate)
+
+        # Get KCSM state for logging
+        kcsm_state = self.kcsm.deauth_kcsm.get_client(source_mac).deauth_state
+        logger.ooda_decide_kcsm(
+            "DEAUTH", source_mac, kcsm_state,
+            attack != AttackType.NONE,
+            attack.name if attack != AttackType.NONE else None
+        )
+
+        # === ACT: Take action based on decision ===
+        if should_drop:
+            self.stats['deauth_dropped'] += 1
+            logger.ooda_decide_drop("Spoofed deauth (MOCC failed)", source_mac)
+        else:
+            logger.ooda_decide_pass(source_mac)
+
+        if attack != AttackType.NONE:
+            self.stats['attacks_detected'] += 1
+
+            # Trigger countermeasures
+            if self.on_attack_detected:
+                self.on_attack_detected(attack, source_mac)
+
+            # Countermeasure: Inject false handshake
+            self._inject_false_handshake(source_mac)
+            logger.ooda_act_countermeasure(
+                "INJECT_FALSE_HANDSHAKE",
+                source_mac,
+                "Poisoning attacker capture file"
+            )
+            logger.ooda_act_alert(
+                attack.name,
+                f"Client {source_mac} under deauth attack - countermeasures active"
+            )
+
+    def _process_disassoc_from_frame_info(self, source_mac: str, rf_features: RFFeatures, frame_info: dict):
+        """Process disassociation frame from parsed frame_info."""
+        logger.ooda_observe("DISASSOC", source_mac, {'rssi': rf_features.rssi})
+
+        prob, is_legitimate = self.mocc.identify(source_mac, rf_features)
+        logger.ooda_orient_mocc(source_mac, prob, is_legitimate)
+
+        attack, should_drop = self.kcsm.process_disassoc(source_mac, is_legitimate)
+
+        if should_drop:
+            logger.ooda_decide_drop("Spoofed disassoc (MOCC failed)", source_mac)
+        else:
+            logger.ooda_decide_pass(source_mac)
+
+        if attack != AttackType.NONE:
+            self.stats['attacks_detected'] += 1
+            logger.ooda_decide_kcsm("DISASSOC", source_mac, 3, True, attack.name)
+            if self.on_attack_detected:
+                self.on_attack_detected(attack, source_mac)
+
+    def _process_auth_from_frame_info(self, source_mac: str, frame_info: dict):
+        """Process authentication frame from parsed frame_info (flood detection)."""
+        logger.ooda_observe("AUTH", source_mac)
+
+        attack = self.kcsm.process_auth()
+        auth_count = self.kcsm.auth_flood_kcsm.auth_count
+
+        if attack != AttackType.NONE:
+            self.stats['attacks_detected'] += 1
+            logger.attack_flood("AUTH", auth_count, 10)
+            logger.ooda_act_alert("AUTH_FLOOD", f"Flood detected: {auth_count} auth frames")
+            if self.on_attack_detected:
+                self.on_attack_detected(attack, source_mac)
+
+    def _process_assoc_from_frame_info(self, source_mac: str, frame_info: dict):
+        """Process association frame from parsed frame_info (flood detection)."""
+        logger.ooda_observe("ASSOC", source_mac)
+
+        attack = self.kcsm.process_assoc()
+        assoc_count = self.kcsm.assoc_flood_kcsm.assoc_count
+
+        if attack != AttackType.NONE:
+            self.stats['attacks_detected'] += 1
+            logger.attack_flood("ASSOC", assoc_count, 10)
+            logger.ooda_act_alert("ASSOC_FLOOD", f"Flood detected: {assoc_count} assoc frames")
+            if self.on_attack_detected:
+                self.on_attack_detected(attack, source_mac)
+
+    def _process_beacon_from_frame_info(self, beacon_bssid: str, frame_info: dict):
+        """Process beacon frame from parsed frame_info (evil twin detection)."""
+        logger.ooda_observe("BEACON", beacon_bssid)
+
+        attack = self.kcsm.process_beacon(self.ssid, beacon_bssid)
+
+        if attack != AttackType.NONE:
+            self.stats['attacks_detected'] += 1
+            logger.attack_evil_twin(self.ssid, self.bssid or "UNKNOWN", beacon_bssid)
+            logger.ooda_act_alert("EVIL_TWIN", f"Rogue AP detected with BSSID={beacon_bssid}")
+            if self.on_attack_detected:
+                self.on_attack_detected(attack, beacon_bssid)
+
+    def _process_data_from_frame_info(self, source_mac: str, rf_features: RFFeatures, frame_info: dict):
+        """Process data frame from parsed frame_info (MOCC training)."""
+        # Train MOCC with this frame's RF features
+        self.mocc.train(source_mac, rf_features)
+
+        # Log training progress
+        status = self.mocc.get_training_status(source_mac)
+        if status['samples'] % 50 == 0:  # Log every 50 samples
+            logger.ooda_orient_training(source_mac, status['samples'], status['trained'])
 
     def get_stats(self) -> Dict:
         """Get controller statistics."""
