@@ -47,24 +47,6 @@ def colored(text, color):
     return f"{color}{text}{Colors.ENDC}"
 
 
-def print_banner():
-    banner = """
-╔═══════════════════════════════════════════════════════════════════╗
-║                                                                   ║
-║     █████╗ ████████╗████████╗ █████╗  ██████╗██╗  ██╗            ║
-║    ██╔══██╗╚══██╔══╝╚══██╔══╝██╔══██╗██╔════╝██║ ██╔╝            ║
-║    ███████║   ██║      ██║   ███████║██║     █████╔╝             ║
-║    ██╔══██║   ██║      ██║   ██╔══██║██║     ██╔═██╗             ║
-║    ██║  ██║   ██║      ██║   ██║  ██║╚██████╗██║  ██╗            ║
-║    ╚═╝  ╚═╝   ╚═╝      ╚═╝   ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝            ║
-║                                                                   ║
-║          WIDD Attack Console - Wireless Injection Mode            ║
-║       Sends WIDD frames via wireless to AP (tc mirrored)          ║
-║                                                                   ║
-╚═══════════════════════════════════════════════════════════════════╝
-"""
-    print(colored(banner, Colors.RED))
-
 
 def print_help():
     help_text = """
@@ -103,29 +85,6 @@ def print_help():
 """
     print(colored(help_text, Colors.CYAN))
 
-
-def print_clients():
-    clients_text = """
-┌─────────────────────────────────────────────────────────────────────┐
-│                      NETWORK DEVICES                                │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│  LEGITIMATE CLIENTS (RF signatures trained):                        │
-│    sta1    00:00:00:00:00:01    RSSI: -45 dBm    [TRAINED]          │
-│    sta2    00:00:00:00:00:02    RSSI: -55 dBm    [REGISTERED]       │
-│                                                                     │
-│  ACCESS POINT:                                                      │
-│    ap1     00:11:22:33:44:55    SSID: WIDD_Network                  │
-│                                                                     │
-│  ATTACKER (you):                                                    │
-│    evil    00:00:00:00:00:99    RSSI: -70 dBm    [DIFFERENT RF!]    │
-│                                                                     │
-│  NOTE: Spoofed frames use YOUR RF signature, which won't match     │
-│        the victim's trained signature - this is how MOCC detects!  │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
-"""
-    print(colored(clients_text, Colors.YELLOW))
 
 
 class InteractiveAttackCLI:
@@ -437,7 +396,6 @@ class InteractiveAttackCLI:
 
     def run(self):
         """Main CLI loop."""
-        print_banner()
 
         print(colored("\n  Initializing attack generator...", Colors.CYAN))
         self.initialize()
@@ -470,10 +428,7 @@ class InteractiveAttackCLI:
 
                 elif cmd == 'clear':
                     os.system('clear')
-                    print_banner()
 
-                elif cmd == 'clients':
-                    print_clients()
 
                 elif cmd == 'interface':
                     self.cmd_interface(args)
