@@ -4,115 +4,187 @@
 skinparam componentStyle rectangle
 skinparam backgroundColor #FFFFFF
 
-' ==================== COMPONENTS ====================
+title WIDD System - Component Architecture\n(Direct Injection Mode)
 
-package "Data Plane (P4/bmv2)" as DataPlane #LightCyan {
-    component [P4 Switch\n(widd.p4)] as P4Switch
+' ==================== NETWORK TOPOLOGY ====================
 
-    note right of P4Switch
-        • Parses 802.11 frames
-        • Extracts RF features
-        • Classifies frame types
-        • Forwards to CPU port
+package "Mininet-WiFi Network (Simulation)" as Network #LightGreen {
+    component [sta1\n00:00:00:00:00:01] as STA1
+    component [sta2\n00:00:00:00:00:02] as STA2
+    component [sta3\n00:00:00:00:00:03] as STA3
+
+    component [ap1\nSSID: WIDD_Network] as AP1
+
+    note bottom of Network
+        Mininet-WiFi provides the
+        network namespace isolation
+        but does NOT transmit real
+        802.11 frames on the wire
     end note
 }
 
+' ==================== DATA PLANE ====================
+
+package "Data Plane (bmv2 P4 Switch)" as DataPlane #LightCyan {
+    component [s1 (simple_switch)\nwidd.p4\nThrift: 9090] as P4Switch
+
+    note right of P4Switch
+        **P4 Parser:**
+        1. Parse Ethernet (ethertype 0x88B5)
+        2. Parse wifi_fc_t (2 bytes)
+        3. Parse wifi_addr_t (20 bytes)
+        4. Parse rf_features_t (8 bytes)
+
+        **P4 Ingress:**
+        - Management frames -> CPU port 255
+        - Data frames -> CPU port 255
+        - Prepends cpu_header_t (4 bytes)
+
+        **P4 Deparser:**
+        emit(cpu) + emit(ethernet) +
+        emit(wifiFC) + emit(wifiAddr) +
+        emit(rfFeatures)
+    end note
+}
+
+' ==================== CONTROL PLANE ====================
+
 package "Control Plane (Python)" as ControlPlane #LightBlue {
-    component [OODA Controller] as OODA
+    component [PacketReceiver\nsniffs s1-cpu-h\n(Scapy)] as PacketReceiver
+
+    component [OODA Controller\n(start_server.py)] as OODA
+
     component [MOCC\nRF Fingerprinting] as MOCC
-    component [KCSM\nState Machines] as KCSM
-    component [Switch Interface\nThrift API] as SwitchInterface
+
+    component [KCSM Manager\nState Machines] as KCSM
+
     component [Logger] as Logger
 
     note right of OODA
         **OODA Loop:**
-        1. OBSERVE: Parse frames
-        2. ORIENT: Identify device
-        3. DECIDE: Detect attack
-        4. ACT: Countermeasures
+        1. OBSERVE: Receive from PacketReceiver
+        2. ORIENT: MOCC RF verification
+        3. DECIDE: KCSM state update
+        4. ACT: Drop/Pass/Alert
     end note
 }
 
-package "Attack Simulation" as AttackSim #LightCoral {
-    component [Attack Generator\nScapy] as AttackGen
-    component [Attack CLI\nInteractive] as AttackCLI
+' ==================== ATTACK SIMULATION ====================
 
-    note right of AttackCLI
-        Uses AttackGenerator to send:
-        • Deauth attacks
-        • Evil Twin AP
-        • Auth/Assoc floods
-        • Spoofed frames
+package "Attack Simulation (Direct Injection)" as AttackSim #LightCoral {
+    component [attack_generator.py\n(Scapy-based)] as AttackGen
 
-        All attacks go through real network!
+    component [interactive_attack.py\n(CLI Interface)] as AttackCLI
+
+    note right of AttackGen
+        **WIDD Frame Format:**
+        [Ethernet Header (14 bytes)]
+          - dst: AP MAC
+          - src: spoofed MAC
+          - type: 0x88B5 (WIDD)
+        [802.11 FC (2 bytes)]
+        [802.11 Addresses (20 bytes)]
+        [RF Features (8 bytes)]
+        [Payload]
+
+        Simulates what an AP would
+        produce after capturing
+        real 802.11 frames
     end note
 }
 
-package "Demo/Visualization" as Demo #LightYellow {
-    component [Simulation Server\nSocket API] as SimServer
-    component [Packet Monitor\nReal-time Display] as Monitor
-}
+' ==================== DEMO/MONITORING ====================
 
-package "Network Layer (Mininet-WiFi)" as Network #LightGreen {
-    component [Access Points] as APs
-    component [Legitimate Clients] as Clients
-    component [Attacker Stations] as Attackers
+package "Demo & Monitoring" as Demo #LightYellow {
+    component [packet_monitor.py\nUDP: 9998] as Monitor
+
+    component [demo_launcher.sh\n4 xterm windows] as Launcher
+
+    note right of Monitor
+        Receives UDP events from
+        start_server.py showing
+        OODA loop stages
+    end note
 }
 
 ' ==================== INTERFACES ====================
 
-interface "Packet-In\n(CPU Port 255)" as PacketIn
-interface "Packet-Out\n(CPU Port)" as PacketOut
-interface "Thrift RPC\n(Port 9090)" as ThriftRPC
-interface "Attack Commands\n(Port 9999)" as AttackAPI
-interface "Monitor Events\n(Port 9998)" as MonitorAPI
-interface "802.11 Frames\n(WiFi)" as WiFiFrames
+' Direct injection from Attack CLI to Switch
+interface "s1-eth1\n(direct injection)" as S1_ETH1
+AttackCLI -down-> AttackGen : uses
+AttackGen -down-> S1_ETH1 : sendp()\nWIDD frames
+S1_ETH1 -down-> P4Switch : port 1
 
-' ==================== CONNECTIONS ====================
+note right of S1_ETH1
+    **Direct Injection:**
+    Attack CLI sends WIDD-formatted
+    Ethernet frames directly to s1-eth1
 
-' Data Plane <-> Control Plane
-P4Switch -up- PacketIn
-P4Switch -up- PacketOut
-P4Switch -up- ThriftRPC
+    This simulates 802.11 frames
+    captured and encapsulated by AP
+end note
 
-OODA -down-> PacketIn : receives
-OODA -down-> PacketOut : sends
-SwitchInterface -down-> ThriftRPC : control
+' CPU Port veth pair
+interface "s1-cpu-s <-> s1-cpu-h\n(veth pair, port 255)" as CPUPort
+P4Switch -down- CPUPort
+CPUPort -down- PacketReceiver
 
-' Control Plane Internal
+' Control Plane internal connections
+PacketReceiver -down-> OODA : frame_info dict
 OODA *-- MOCC
 OODA *-- KCSM
-OODA *-- SwitchInterface
-OODA ..> Logger : logs
+OODA ..> Logger : logs events
 
-' Control Plane <-> Demo
-OODA -left-> AttackAPI
-SimServer -left-> AttackAPI : listens
-SimServer -left-> MonitorAPI : broadcasts
-Monitor -left-> MonitorAPI : receives
+' UDP Monitor connection
+interface "UDP 9998" as UDPMonitor
+OODA -right-> UDPMonitor : send_event()
+UDPMonitor -right-> Monitor
 
-SimServer o-- OODA : references
+' Demo launcher
+Launcher ..> Network : starts
+Launcher ..> OODA : starts
+Launcher ..> AttackCLI : starts
+Launcher ..> Monitor : starts
 
-' Attack Simulation <-> Data Plane
-AttackCLI o-- AttackGen : uses
-AttackGen -down-> WiFiFrames : sends packets
-AttackCLI -down-> WiFiFrames : sends via AttackGen
+' ==================== PACKET FLOW ====================
 
-' Network Layer <-> Data Plane
-APs -up-> WiFiFrames
-Clients -up-> WiFiFrames
-Attackers -up-> WiFiFrames
-P4Switch -down-> WiFiFrames : receives
+note bottom of DataPlane
+    **Packet Flow (Direct Injection Mode):**
 
-' ==================== LEGENDS ====================
+    1. Attack CLI builds WIDD frame with:
+       - Spoofed source MAC (e.g., sta1)
+       - Attacker's RF features (different from sta1)
+       - Management frame type (e.g., deauth)
+
+    2. Scapy sends frame to s1-eth1 (switch port 1)
+
+    3. P4 parser extracts headers (ethertype 0x88B5)
+
+    4. P4 ingress sends management frames to CPU port
+
+    5. P4 deparser prepends CPU header, emits packet
+
+    6. Packet arrives at s1-cpu-h (controller interface)
+
+    7. PacketReceiver parses and creates frame_info
+
+    8. OODA Controller:
+       - MOCC detects RF signature mismatch
+       - KCSM updates state machine
+       - Attack detected and logged
+
+    9. UDP event sent to packet_monitor
+end note
+
+' ==================== LEGEND ====================
 
 legend right
     |= Color |= Layer |
-    | <#LightCyan> | Data Plane (P4) |
+    | <#LightGreen> | Mininet-WiFi Network |
+    | <#LightCyan> | Data Plane (P4/bmv2) |
     | <#LightBlue> | Control Plane (Python) |
     | <#LightCoral> | Attack Simulation |
-    | <#LightYellow> | Demo/Visualization |
-    | <#LightGreen> | Network Layer |
+    | <#LightYellow> | Demo/Monitoring |
 endlegend
 
 @enduml

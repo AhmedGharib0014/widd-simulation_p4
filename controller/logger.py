@@ -205,6 +205,12 @@ class WIDDLogger:
 
     # ==================== ATTACK LOGS ====================
 
+    def attack_detected(self, message: str):
+        """Log a generic attack detection message."""
+        self.stats['attacks_detected'] += 1
+        self._log(LogLevel.WARNING, "ATTACK", "DETECT",
+                  "ALERT", message, Colors.BRIGHT_RED)
+
     def attack_deauth(self, src_mac: str, target_mac: str,
                       spoofed: bool, count: int):
         """Log deauthentication attack."""

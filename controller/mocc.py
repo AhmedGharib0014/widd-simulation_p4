@@ -288,6 +288,47 @@ class MOCC:
             'min_samples': DeviceSignature.MIN_SAMPLES
         }
 
+    def update_device_rssi(self, mac_address: str, rssi: int):
+        """
+        Update the RSSI for a device (used by start_server).
+        This registers the device if not already registered.
+
+        Args:
+            mac_address: Device MAC address
+            rssi: Current RSSI value
+        """
+        if mac_address not in self._simulated_fingerprints:
+            self.register_device(mac_address, base_rssi=rssi)
+        else:
+            # Update the base RSSI (device may have moved)
+            self._simulated_fingerprints[mac_address].rssi = rssi
+
+    def is_device_registered(self, mac_address: str) -> bool:
+        """Check if a device is registered in the MOCC."""
+        return mac_address in self.signatures
+
+    def verify_device(self, mac_address: str, rf_features: dict) -> bool:
+        """
+        Verify if a frame is from the claimed device using RF fingerprinting.
+
+        Args:
+            mac_address: Claimed MAC address
+            rf_features: Dict with 'rssi', 'phase', 'pilot', 'mag' keys
+
+        Returns:
+            True if the frame appears legitimate, False if likely spoofed
+        """
+        features = RFFeatures(
+            rssi=rf_features.get('rssi', 0),
+            phase_offset=rf_features.get('phase', 0),
+            pilot_offset=rf_features.get('pilot', 0),
+            mag_squared=rf_features.get('mag', 0)
+        )
+
+        probability, is_legitimate = self.identify(mac_address, features)
+        print(f"[MOCC] Verify {mac_address}: prob={probability:.2%}, legitimate={is_legitimate}")
+        return is_legitimate
+
 
 # Test the MOCC
 if __name__ == '__main__':

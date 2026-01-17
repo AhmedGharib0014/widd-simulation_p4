@@ -8,465 +8,437 @@ skinparam class {
     BackgroundColor<<Detection>> LightGreen
     BackgroundColor<<Attack>> LightCoral
     BackgroundColor<<Data>> Wheat
+    BackgroundColor<<Network>> LightCyan
     BackgroundColor<<Enum>> LightGray
     BorderColor Black
     ArrowColor Black
 }
 
-' ==================== ENUMERATIONS ====================
-package "Enums" <<Enum>> {
-    enum AttackType {
-        NONE
-        DEAUTH
-        DISASSOC
-        EVIL_TWIN
-        CREDENTIAL
-        AUTH_FLOOD
-        ASSOC_FLOOD
-    }
+title WIDD System - Class Architecture\n(Based on Actual Code Implementation)
 
-    enum FrameType {
-        DATA
-        AUTH
-        DEAUTH_TRUE
-        DEAUTH_FALSE
-        ASSOC
-        DISASSOC_TRUE
-        DISASSOC_FALSE
-        BEACON_EVIL
-    }
+' ==================== PACKET FORMATS ====================
+package "Packet Formats" <<Data>> {
 
-    enum LogLevel {
-        DEBUG
-        INFO
-        WARNING
-        ERROR
-        CRITICAL
-    }
-}
-
-' ==================== DATA CLASSES ====================
-package "Data Models" <<Data>> {
-    class RFFeatures <<Data>> {
-        +rssi: int
-        +phase_offset: int
-        +pilot_offset: int
-        +mag_squared: int
-        --
-        +to_tuple(): Tuple
-        +distance(other: RFFeatures): float
-    }
-
-    class DeviceSignature <<Data>> {
-        +mac_address: str
-        +samples: list[RFFeatures]
-        +mean_features: RFFeatures
-        +std_features: RFFeatures
-        +trained: bool
-        +last_updated: float
-        --
-        {static} +MIN_SAMPLES: int = 100
-    }
-
-    class ClientState <<Data>> {
-        +mac_address: str
-        +deauth_state: int
-        +deauth_false_count: int
-        +deauth_total_count: int
-        +deauth_last_time: float
-        +disassoc_state: int
-        +disassoc_false_count: int
-        +disassoc_last_time: float
-        +auth_flood_state: int
-        +auth_count: int
-        +assoc_flood_state: int
-        +assoc_count: int
-        +evil_twin_detected: bool
-    }
-
-    class ParsedFrame <<Data>> {
-        +eth_dst: bytes
-        +eth_src: bytes
-        +eth_type: int
-        +frame_type: int
-        +subtype: int
-        +addr1: str
-        +addr2: str
-        +addr3: str
-        +rssi: int
-        +phase_offset: int
-        +pilot_offset: int
-        +mag_squared: int
-        +cpu_reason: int
-        +orig_port: int
-    }
-
-    class PacketInEvent <<Data>> {
-        +raw_packet: bytes
-        +reason: int
-        +orig_port: int
-        +rssi: int
+    class "WIDD Frame Format\n(attack_generator.py)" as WIDDFrame <<Data>> {
+        == Ethernet Header (14 bytes) ==
+        +dst_mac: bytes[6]
+        +src_mac: bytes[6]
+        +ethertype: 0x88B5
+        == 802.11 Frame Control (2 bytes) ==
+        +protocol_version: bit[2]
+        +frame_type: bit[2]
+        +subtype: bit[4]
+        +flags: bit[8]
+        == 802.11 Addresses (20 bytes) ==
+        +addr1: bytes[6] (Receiver)
+        +addr2: bytes[6] (Transmitter)
+        +addr3: bytes[6] (BSSID)
+        +seq_ctrl: bytes[2]
+        == RF Features (8 bytes) ==
+        +rssi: int16
+        +phase_offset: uint16
+        +pilot_offset: uint16
+        +mag_squared: uint16
+        == Payload (variable) ==
         +payload: bytes
+    }
+
+    class "CPU Header\n(P4 prepends this)" as CPUHeader <<Data>> {
+        +reason: uint8
+        +orig_port: uint8
+        +rf_rssi: int16
         --
-        +get_reason_name(): str
+        Total: 4 bytes
+        --
+        reason codes:
+        1 = deauth
+        2 = assoc
+        3 = auth
+        4 = beacon
+        5 = disassoc
+        6 = data
+    }
+
+    class "P4 Output Packet Format" as P4Output <<Data>> {
+        == Order of emission ==
+        1. cpu_header_t (4 bytes)
+        2. ethernet_t (14 bytes)
+        3. wifi_fc_t (2 bytes)
+        4. wifi_addr_t (20 bytes)
+        5. rf_features_t (8 bytes)
+        --
+        Total header: 48 bytes
+    }
+
+    note right of WIDDFrame
+        **802.11 Frame Types:**
+        0 = Management
+        1 = Control
+        2 = Data
+
+        **Management Subtypes:**
+        0x0 = Assoc Req
+        0x8 = Beacon
+        0xA = Disassoc
+        0xB = Auth
+        0xC = Deauth
+    end note
+}
+
+' ==================== P4 SWITCH (widd.p4) ====================
+package "P4 Data Plane (widd.p4)" <<Network>> {
+
+    class P4Switch <<Network>> {
+        == Constants ==
+        {static} +ETHERTYPE_WIDD: 0x88B5
+        {static} +CPU_PORT: 255
+        {static} +THRIFT_PORT: 9090
+        == Headers Parsed ==
+        +ethernet_t
+        +wifi_fc_t
+        +wifi_addr_t
+        +rf_features_t
+        +cpu_header_t
+        == Actions ==
+        +drop()
+        +forward(port)
+        +send_to_cpu(reason)
+        +flood()
+        == Tables ==
+        +l2_forward
+        +device_lookup
+    }
+
+    class "WiddParser" as Parser <<Network>> {
+        +parse_ethernet()
+        +parse_wifi_fc()
+        +parse_wifi_addr()
+        +parse_rf_features()
+    }
+
+    class "WiddIngress" as Ingress <<Network>> {
+        +frameCounter: counter
+        +knownDevices: register
+        --
+        +apply()
+        -check frame type
+        -send mgmt frames to CPU
+        -send data frames to CPU
+    }
+
+    class "WiddDeparser" as Deparser <<Network>> {
+        +emit(cpu)
+        +emit(ethernet)
+        +emit(wifiFC)
+        +emit(wifiAddr)
+        +emit(rfFeatures)
     }
 }
 
-' ==================== MOCC (RF FINGERPRINTING) ====================
-package "MOCC - RF Device Fingerprinting" <<Detection>> {
-    class MOCC {
-        -signatures: Dict[str, DeviceSignature]
-        -_simulated_fingerprints: Dict[str, RFFeatures]
-        -rssi_noise_std: int = 3
-        -phase_noise_std: int = 10
-        -pilot_noise_std: int = 5
-        -mag_noise_std: int = 50
+' ==================== TOPOLOGY (widd_topo.py) ====================
+package "Network Topology (widd_topo.py)" <<Network>> {
+
+    class P4SwitchClass <<Network>> {
+        +name: str = "s1"
+        +sw_path: str = "simple_switch"
+        +json_path: str
+        +thrift_port: int = 9090
+        +bmv2_pid: int
         --
-        {static} +IDENTIFICATION_THRESHOLD: float = 0.35
+        +start(controllers)
+        +stop()
         --
-        +register_device(mac: str, base_rssi: int)
-        +simulate_rf_features(mac: str): RFFeatures
-        +train(mac: str, features: RFFeatures)
-        +identify(claimed_mac: str, features: RFFeatures): Tuple[float, bool]
-        +get_training_status(mac: str): Dict
-        -_update_signature(mac: str)
+        Creates veth pair:
+        s1-cpu-h <-> s1-cpu-s
+    }
+
+    class "create_topology()" as Topology <<Network>> {
+        == Network Components ==
+        +ap1: AccessPoint
+        +s1: P4Switch
+        +sta1, sta2, sta3: Station
+        +attacker: Station
+        == Connections ==
+        ap1 <-> s1 (ap1-eth1 <-> s1-eth1)
+        s1 <-> controller (s1-cpu-s <-> s1-cpu-h)
+        == Traffic Mirroring ==
+        tc mirred: ap1-wlan -> ap1-eth1
     }
 }
 
-' ==================== KCSM (STATE MACHINES) ====================
-package "KCSM - Kill Chain State Machines" <<Detection>> {
-    class KCSMManager {
-        +deauth_kcsm: DeauthKCSM
-        +disassoc_kcsm: DisassocKCSM
-        +auth_flood_kcsm: AuthFloodKCSM
-        +assoc_flood_kcsm: AssocFloodKCSM
-        +known_ssid: str
-        +known_bssid: str
-        +evil_twin_detected: bool
-        +attack_counts: Dict[AttackType, int]
+' ==================== PACKET RECEIVER ====================
+package "Packet Receiver (packet_receiver.py)" <<Controller>> {
+
+    class PacketReceiver <<Controller>> {
+        +interface: str = "s1-cpu-h"
+        +callback: Callable
+        +running: bool
+        +thread: Thread
         --
-        +set_network_info(ssid: str, bssid: str)
-        +process_deauth(mac: str, is_legitimate: bool): Tuple[AttackType, bool]
-        +process_disassoc(mac: str, is_legitimate: bool): Tuple[AttackType, bool]
-        +process_auth(): AttackType
-        +process_assoc(): AttackType
-        +process_beacon(ssid: str, bssid: str): AttackType
-        +get_stats(): Dict
+        +start()
+        +stop()
+        -_sniff_packets()
+        -_handle_packet(pkt)
+        -_parse_widd_frame(payload): dict
+        --
+        Uses Scapy sniff()
     }
 
-    class DeauthKCSM {
-        -clients: Dict[str, ClientState]
-        --
-        {static} +TIMEOUT: float = 2.0
-        {static} +FALSE_DEAUTH_THRESHOLD: int = 2
-        {static} +TOTAL_DEAUTH_THRESHOLD: int = 3
-        --
-        +get_client(mac: str): ClientState
-        +update(mac: str, is_legitimate: bool): Tuple[AttackType, bool]
-        +reset(mac: str)
-    }
-
-    class DisassocKCSM {
-        -clients: Dict[str, ClientState]
-        --
-        {static} +TIMEOUT: float = 2.0
-        {static} +FALSE_THRESHOLD: int = 2
-        {static} +TOTAL_THRESHOLD: int = 3
-        --
-        +get_client(mac: str): ClientState
-        +update(mac: str, is_legitimate: bool): Tuple[AttackType, bool]
-    }
-
-    class AuthFloodKCSM {
-        +auth_count: int
-        +last_time: float
-        +state: int
-        --
-        {static} +TIMEOUT: float = 2.0
-        {static} +FLOOD_THRESHOLD: int = 10
-        --
-        +update(): AttackType
-    }
-
-    class AssocFloodKCSM {
-        +assoc_count: int
-        +last_time: float
-        +state: int
-        --
-        {static} +TIMEOUT: float = 2.0
-        {static} +FLOOD_THRESHOLD: int = 10
-        --
-        +update(): AttackType
-    }
-}
-
-' ==================== SWITCH INTERFACE ====================
-package "Switch Interface - BMV2 Thrift" {
-    class SwitchInterface {
-        +thrift_ip: str
-        +thrift_port: int
-        +cpu_iface: str
-        -transport: TTransport
-        -client: Standard.Client
-        -connected: bool
-        -packet_in_queue: Queue
-        -packet_in_callback: Callable
-        -packet_in_thread: Thread
-        -stop_event: Event
-        -cpu_socket: socket
-        --
-        +connect(): bool
-        +disconnect()
-        +add_table_entry(table: str, matches: Dict, action: str): bool
-        +delete_table_entry(table: str, handle: int): bool
-        +read_register(name: str, index: int): int
-        +write_register(name: str, index: int, value: int): bool
-        +read_counter(name: str, index: int): Tuple
-        +start_packet_in_listener(callback: Callable, iface: str)
-        +stop_packet_in_listener()
-        +send_packet_out(port: int, packet: bytes): bool
-        -_packet_in_loop(iface: str)
+    class "frame_info dict" as FrameInfo <<Data>> {
+        +frame_type: str
+        +subtype: str
+        +frame_type_num: int
+        +subtype_num: int
+        +src_mac: str
+        +dst_mac: str
+        +bssid: str
+        +seq_ctrl: int
+        +rssi: int
+        +phase: int
+        +pilot: int
+        +mag: int
+        +cpu_reason: int
+        +cpu_orig_port: int
+        +raw_payload: bytes
     }
 }
 
 ' ==================== OODA CONTROLLER ====================
-package "OODA Controller - Main Control Loop" <<Controller>> {
-    class OODAController {
-        +switch: SwitchInterface
+package "OODA Controller (controller/)" <<Controller>> {
+
+    class OODAController <<Controller>> {
         +mocc: MOCC
         +kcsm: KCSMManager
-        +ssid: str
-        +bssid: str
-        +known_clients: Dict[str, bool]
-        +stats: Dict
-        +on_attack_detected: Callable
-        +running: bool
+        +known_clients: list
+        +stats: dict
         --
-        +register_client(mac: str, base_rssi: int)
-        +set_network_info(ssid: str, bssid: str)
-        +start(): bool
-        +stop()
-        +simulate_frame(frame_type: str, source_mac: str, is_spoofed: bool, spoofed_mac: str)
-        +get_stats(): Dict
+        +register_client(mac, rssi)
+        +process_frame(frame_info)
+        +get_stats(): dict
+    }
+
+    class MOCC <<Detection>> {
+        -device_signatures: dict
+        -device_rssi: dict
         --
-        -_handle_packet_in(event: PacketInEvent)
-        -_parse_frame(event: PacketInEvent): ParsedFrame
-        -_process_deauth(frame: ParsedFrame, rf: RFFeatures)
-        -_process_disassoc(frame: ParsedFrame, rf: RFFeatures)
-        -_process_auth(frame: ParsedFrame)
-        -_process_assoc(frame: ParsedFrame)
-        -_process_beacon(frame: ParsedFrame)
-        -_process_data(frame: ParsedFrame, rf: RFFeatures)
-        -_inject_false_handshake(target_mac: str)
+        {static} +THRESHOLD: float = 0.35
+        --
+        +register_device(mac)
+        +update_device_rssi(mac, rssi)
+        +add_sample(mac, rf_features)
+        +verify_device(mac, rf_features): bool
+        +is_device_registered(mac): bool
+        +get_probability(mac, rf_features): float
+    }
+
+    class KCSMManager <<Detection>> {
+        -client_states: dict
+        -attack_counts: dict
+        --
+        +process_deauth(mac, is_legitimate)
+        +process_disassoc(mac, is_legitimate)
+        +process_auth(mac)
+        +process_assoc(mac)
+        +process_beacon(ssid, bssid)
+        +report_attack(mac, attack_type)
+        +get_stats(): dict
+    }
+
+    class WIDDLogger <<Controller>> {
+        +use_colors: bool
+        +stats: dict
+        --
+        +system_info(msg)
+        +system_start(component)
+        +system_stop(component)
+        +attack_detected(msg)
+        +print_stats()
     }
 }
 
-' ==================== ATTACK GENERATOR ====================
-package "Attack Generation" <<Attack>> {
-    class AttackGenerator {
-        +interface: str
-        +wap_mac: str
-        +wap_bssid: str
-        +attacker_rssi: int
-        +attacker_phase: int
-        +attacker_pilot: int
-        +attacker_mag: int
-        --
-        +send_frame(frame: bytes, dst_mac: str, src_mac: str)
-        +deauth_attack(victim_mac: str, count: int, interval: float, spoof: bool): int
-        +disassoc_attack(victim_mac: str, count: int, interval: float)
-        +auth_flood(count: int, interval: float)
-        +assoc_flood(count: int, interval: float)
-        +evil_twin_beacon(ssid: str, count: int, interval: float)
-        +generate_legitimate_data(client_mac: str, count: int, rssi: int)
-    }
-}
+' ==================== START_SERVER ====================
+package "Server Entry Point (start_server.py)" <<Controller>> {
 
-' ==================== SIMULATION SERVER ====================
-package "Simulation & Demo" {
-    class SimulationServer {
+    class "main()" as StartServer <<Controller>> {
+        == Initialization ==
         +controller: OODAController
-        +running: bool
-        -cmd_socket: socket
-        -monitor_clients: list
-        -event_queue: Queue
-        -cmd_thread: Thread
-        -broadcast_thread: Thread
+        +receiver: PacketReceiver
+        == UDP Monitor ==
+        +monitor_socket: UDP
+        +MONITOR_ADDR: (127.0.0.1, 9998)
+        == Functions ==
+        +send_event(stage, frame_type, src_mac, details)
+        +handle_packet(frame_info)
         --
-        +start()
-        +stop()
-        +emit_event(event: PacketEvent)
-        -_cmd_listener()
-        -_handle_cmd_client(client: socket)
-        -_process_command(msg: dict): dict
-        -_event_broadcaster()
+        Listens on s1-cpu-h
+        Sends UDP events to packet_monitor
+    }
+}
+
+' ==================== ATTACK GENERATION ====================
+package "Attack Generation (attacks/)" <<Attack>> {
+
+    class AttackGenerator <<Attack>> {
+        +interface: str
+        +wap_mac: str = "00:11:22:33:44:55"
+        +wap_bssid: str
+        +attacker_rssi: int = -60
+        +attacker_phase: int = 350
+        +attacker_pilot: int = 150
+        +attacker_mag: int = 3500
+        --
+        +send_frame(frame, dst_mac, src_mac)
+        +deauth_attack(victim_mac, count, interval, spoof): int
+        +disassoc_attack(victim_mac, count, interval)
+        +auth_flood(count, interval)
+        +assoc_flood(count, interval)
+        +evil_twin_beacon(ssid, count, interval)
+        +generate_legitimate_data(client_mac, count, rssi, phase, pilot, mag)
     }
 
-    class InteractiveAttackCLI {
+    class "build_widd_frame()" as BuildFrame <<Attack>> {
+        +frame_type: int
+        +subtype: int
+        +dst_mac: str
+        +src_mac: str
+        +bssid: str
+        +rssi: int
+        +phase: int
+        +pilot: int
+        +mag: int
+        +payload: bytes
+        --
+        Returns: bytes (WIDD payload)
+    }
+
+    class "build_wifi_fc()" as BuildFC <<Attack>> {
+        +frame_type: int
+        +subtype: int
+        --
+        fc = (frame_type << 2) | (subtype << 4)
+        Returns: struct.pack('!H', fc)
+    }
+}
+
+' ==================== INTERACTIVE CLI ====================
+package "Interactive CLI (interactive_attack.py)" <<Attack>> {
+
+    class InteractiveAttackCLI <<Attack>> {
         +interface: str
         +attack_gen: AttackGenerator
-        +clients: Dict[str, str]
-        +attacker_mac: str
-        +wap_mac: str
+        +clients: dict
+        +attacker_mac: str = "00:00:00:00:00:99"
+        +wap_mac: str = "00:11:22:33:44:55"
         +wap_bssid: str
         --
         +initialize()
-        +resolve_mac(name_or_mac: str): str
-        +log_attack(attack_type: str, target: str, count: int)
-        +show_sent(count: int, attack_type: str)
-        +cmd_deauth(args: list)
-        +cmd_disassoc(args: list)
-        +cmd_evil_twin(args: list)
-        +cmd_auth_flood(args: list)
-        +cmd_assoc_flood(args: list)
-        +cmd_data(args: list)
-        +cmd_train(args: list)
+        +resolve_mac(name_or_mac): str
+        +cmd_deauth(args)
+        +cmd_disassoc(args)
+        +cmd_evil_twin(args)
+        +cmd_auth_flood(args)
+        +cmd_assoc_flood(args)
+        +cmd_data(args)
+        +cmd_train(args)
+        +cmd_demo1..demo4(args)
         +run()
-    }
-
-    class PacketMonitor {
-        +port: int
-        +running: bool
-        +callback: Callable
-        --
-        +start(callback: Callable)
-        +stop()
-        -_default_display(event: dict)
-    }
-
-    class PacketEvent {
-        +timestamp: float
-        +stage: str
-        +frame_type: str
-        +src_mac: str
-        +dst_mac: str
-        +details: dict
-        --
-        +to_dict(): dict
     }
 }
 
-' ==================== LOGGER ====================
-package "Logging System" {
-    class WIDDLogger {
-        +use_colors: bool
-        +log_level: LogLevel
-        +start_time: float
-        +stats: Dict
+' ==================== PACKET MONITOR ====================
+package "Packet Monitor (packet_monitor.py)" <<Controller>> {
+
+    class PacketMonitor <<Controller>> {
+        +port: int = 9998
+        +running: bool
+        +sock: UDP socket
         --
-        +switch_packet_in(frame_type, src, dst, port, rssi)
-        +switch_packet_out(action, port, details)
-        +p4_classification(frame_type, subtype, table, action)
-        +ooda_observe(frame_type, src_mac, rf_features)
-        +ooda_orient_mocc(claimed_mac, prob, is_legit, rf_distance)
-        +ooda_orient_training(mac, samples, trained)
-        +ooda_decide_kcsm(frame_type, mac, state, attack_detected, attack_type)
-        +ooda_decide_drop(reason, mac)
-        +ooda_decide_pass(mac)
-        +ooda_act_countermeasure(action, target, details)
-        +ooda_act_alert(attack_type, message)
-        +attack_deauth(src, target, spoofed, count)
-        +attack_evil_twin(ssid, legit_bssid, rogue_bssid)
-        +attack_flood(flood_type, count, threshold)
-        +system_info(message)
-        +system_start(component)
-        +system_stop(component)
-        +system_error(component, message)
-        +print_banner()
-        +print_stats()
-        -_color(text: str, color: str): str
-        -_timestamp(): str
-        -_log(level, layer, component, action, details, color)
+        +start()
+        +stop()
+        +display_event(event)
+        --
+        Listens for UDP events
+        from start_server.py
+    }
+}
+
+' ==================== DEMO LAUNCHER ====================
+package "Demo Launcher (demo_launcher.sh)" {
+
+    class DemoLauncher {
+        == xterm Windows ==
+        +TERM_MININET: Mininet CLI
+        +TERM_CONTROLLER: start_server.py
+        +TERM_ATTACKER: interactive_attack.py
+        +TERM_MONITOR: packet_monitor.py
+        == Functions ==
+        +compile_p4()
+        +launch_mininet()
+        +launch_controller()
+        +launch_attacker()
+        +launch_monitor()
+        +cleanup()
     }
 }
 
 ' ==================== RELATIONSHIPS ====================
 
-' OODA Controller Composition
-OODAController *-- SwitchInterface : contains
-OODAController *-- MOCC : contains
-OODAController *-- KCSMManager : contains
+' Packet format relationships
+CPUHeader -right-> P4Output : prepended to
+WIDDFrame -right-> P4Output : follows CPU header
+
+' P4 internal
+Parser -down-> Ingress
+Ingress -down-> Deparser
+P4Switch *-- Parser
+P4Switch *-- Ingress
+P4Switch *-- Deparser
+
+' Topology to P4
+P4SwitchClass ..> P4Switch : runs
+
+' Packet flow
+Deparser -down-> PacketReceiver : emits to s1-cpu-h
+PacketReceiver ..> FrameInfo : creates
+PacketReceiver -down-> StartServer : callback
+
+' OODA Controller
+StartServer *-- OODAController
+OODAController *-- MOCC
+OODAController *-- KCSMManager
 OODAController ..> WIDDLogger : uses
-OODAController ..> ParsedFrame : creates
-OODAController ..> PacketInEvent : receives
-OODAController ..> RFFeatures : processes
 
-' KCSM Manager Composition
-KCSMManager *-- DeauthKCSM : contains
-KCSMManager *-- DisassocKCSM : contains
-KCSMManager *-- AuthFloodKCSM : contains
-KCSMManager *-- AssocFloodKCSM : contains
-KCSMManager ..> AttackType : returns
-KCSMManager ..> ClientState : manages
+' Attack generation
+InteractiveAttackCLI *-- AttackGenerator
+AttackGenerator ..> BuildFrame : uses
+BuildFrame ..> BuildFC : uses
+AttackGenerator ..> WIDDFrame : creates
 
-' State Machines
-DeauthKCSM ..> ClientState : manages
-DisassocKCSM ..> ClientState : manages
-DeauthKCSM ..> AttackType : returns
-DisassocKCSM ..> AttackType : returns
-AuthFloodKCSM ..> AttackType : returns
-AssocFloodKCSM ..> AttackType : returns
+' Monitor
+StartServer ..> PacketMonitor : UDP events
 
-' MOCC
-MOCC *-- DeviceSignature : manages
-MOCC ..> RFFeatures : processes
-DeviceSignature o-- RFFeatures : contains
+' Demo launcher
+DemoLauncher ..> Topology : starts
+DemoLauncher ..> StartServer : starts
+DemoLauncher ..> InteractiveAttackCLI : starts
+DemoLauncher ..> PacketMonitor : starts
 
-' Switch Interface
-SwitchInterface ..> PacketInEvent : creates
+' ==================== NOTES ====================
 
-' Simulation Server
-SimulationServer o-- OODAController : references
-SimulationServer ..> PacketEvent : creates
-
-' Interactive Attack CLI
-InteractiveAttackCLI o-- AttackGenerator : uses
-InteractiveAttackCLI ..> AttackGenerator : sends attacks via
-
-' Attack Generator
-AttackGenerator ..> RFFeatures : generates
-
-' Logger
-WIDDLogger ..> LogLevel : uses
-
-' Notes
-note right of OODAController
-    **OODA Loop Implementation**
-
-    1. OBSERVE: Receive frame from switch
-    2. ORIENT: MOCC identifies device
-    3. DECIDE: KCSM determines action
-    4. ACT: Drop/Pass/Inject countermeasures
+note bottom of BuildFC
+    **POTENTIAL ISSUE:**
+    802.11 FC uses little-endian on wire
+    but struct.pack('!H', fc) uses big-endian
+    This may cause parsing issues in P4
 end note
 
-note right of MOCC
-    **RF Device Fingerprinting**
+note right of PacketReceiver
+    **Current Issue:**
+    Packets arriving show "No Ethernet layer"
+    or wrong ethertype (0x86DD instead of 0x88B5)
 
-    Uses Gaussian distance on RF features:
-    - RSSI (signal strength)
-    - Phase offset
-    - Pilot offset
-    - Magnitude squared
-
-    Threshold: 35% probability
-end note
-
-note right of KCSMManager
-    **Kill Chain State Machines**
-
-    Track attack progression:
-    - Deauth/Disassoc: 2 false frames = attack
-    - Auth/Assoc Flood: 10 frames/2s = attack
-    - Evil Twin: SSID match + BSSID mismatch
-end note
-
-note right of SimulationServer
-    **Demo Architecture**
-
-    Port 9999: Attack CLI commands
-    Port 9998: Packet Monitor events
-
-    Enables visualization without real hardware
+    mininet-wifi wireless simulation
+    may be transforming the packet format
 end note
 
 @enduml

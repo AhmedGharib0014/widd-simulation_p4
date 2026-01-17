@@ -380,6 +380,29 @@ class KCSMManager:
             'evil_twin_active': self.evil_twin_detected
         }
 
+    def report_attack(self, mac_address: str, attack_type: str):
+        """
+        Report an attack detected by external components (e.g., MOCC).
+
+        Args:
+            mac_address: MAC address involved in the attack
+            attack_type: Type of attack (e.g., 'rf_spoofing', 'unknown_deauth')
+        """
+        # Map string attack types to AttackType enum
+        attack_type_map = {
+            'rf_spoofing': AttackType.DEAUTH,
+            'unknown_deauth': AttackType.DEAUTH,
+            'deauth': AttackType.DEAUTH,
+            'disassoc': AttackType.DISASSOC,
+            'auth_flood': AttackType.AUTH_FLOOD,
+            'assoc_flood': AttackType.ASSOC_FLOOD,
+            'evil_twin': AttackType.EVIL_TWIN,
+        }
+
+        attack = attack_type_map.get(attack_type.lower(), AttackType.DEAUTH)
+        self.attack_counts[attack] += 1
+        print(f"[KCSM] Attack reported: {attack_type} from {mac_address}")
+
 
 # Test the KCSM
 if __name__ == '__main__':

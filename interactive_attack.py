@@ -2,14 +2,16 @@
 """
 WIDD Interactive Attack CLI
 
-A colorful command-line interface for launching real attacks through
-the mininet-wifi network using Scapy.
+A colorful command-line interface for launching attacks using Scapy.
 
-This CLI sends real 802.11 frames that go through the P4 switch and
-are processed by the OODA Controller - no simulation bypass!
+This CLI sends WIDD-formatted frames (Ethernet + 802.11 headers + RF features)
+directly to the P4 switch interface for processing by the OODA Controller.
+
+The frames simulate what an AP would produce after capturing real 802.11 frames
+and encapsulating them in WIDD Ethernet format.
 
 Usage:
-    python3 interactive_attack.py [--interface IFACE]
+    sudo python3 interactive_attack.py --interface s1-eth1
 """
 
 import sys
@@ -55,8 +57,8 @@ def print_banner():
 ║    ██║  ██║   ██║      ██║   ██║  ██║╚██████╗██║  ██╗            ║
 ║    ╚═╝  ╚═╝   ╚═╝      ╚═╝   ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝            ║
 ║                                                                   ║
-║              WIDD Attack Console - Network Mode                   ║
-║         Sends real packets through mininet-wifi network          ║
+║          WIDD Attack Console - Direct Injection Mode              ║
+║       Sends WIDD frames directly to P4 switch for detection       ║
 ║                                                                   ║
 ╚═══════════════════════════════════════════════════════════════════╝
 """

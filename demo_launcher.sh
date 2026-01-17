@@ -22,9 +22,9 @@ MININET_PID_FILE="/tmp/widd_mininet.pid"
 # Screen positions (adjust based on your screen resolution)
 # Format: geometry WIDTHxHEIGHT+X+Y
 TERM_MININET="120x20+0+0"         # Top-left: Mininet Network
-TERM_CONTROLLER="120x35+0+300"    # Bottom-left: OODA Controller
-TERM_ATTACKER="120x35+850+0"      # Top-right: Attack CLI
-TERM_MONITOR="120x35+850+450"     # Bottom-right: Packet Monitor
+TERM_CONTROLLER="120x30+0+320"    # Bottom-left: OODA Controller
+TERM_ATTACKER="120x30+850+0"      # Top-right: Attack CLI
+TERM_MONITOR="120x30+850+400"     # Bottom-right: Packet Monitor
 
 # XTerm colors and fonts - all terminals use the same settings
 XTERM_OPTS="-fa 'Monospace' -fs 10 -bg black -fg white"
@@ -161,48 +161,33 @@ launch_controller() {
 }
 
 launch_attacker() {
-    echo "[*] Launching Attack CLI using Mininet's node execution..."
+    echo "[*] Launching Attack CLI (direct injection to switch)..."
 
-    # The attacker interface will be attacker-wlan0 inside its namespace
-    ATTACK_IFACE="attacker-wlan0"
+    # For the demo, attacks are injected directly to the switch interface
+    # This simulates 802.11 frames that have been captured and encapsulated
+    # by the AP into WIDD Ethernet format
+    ATTACK_IFACE="s1-eth1"
 
-    # Find the attacker process PID to get its namespace
-    echo "[*] Finding attacker node namespace..."
+    echo "[*] Attack interface: $ATTACK_IFACE (direct injection to P4 switch)"
 
-    # Use mnexec to run command in the attacker's namespace
-    # Mininet nodes run bash shells, we need to execute in that context
-    ATTACKER_PID=$(pgrep -f "mininet:attacker" | head -1)
+    # Wait for interface to be created
+    echo "[*] Waiting for switch interface..."
+    for i in {1..10}; do
+        if ip link show "$ATTACK_IFACE" &>/dev/null 2>&1; then
+            echo "[+] Found $ATTACK_IFACE"
+            break
+        fi
+        sleep 1
+    done
 
-    if [ -z "$ATTACKER_PID" ]; then
-        echo "[*] Trying alternative method to find attacker process..."
-        # Alternative: use ps to find bash process
-        ATTACKER_PID=$(ps aux | grep -E "bash.*mininet.*attacker" | grep -v grep | awk '{print $2}' | head -1)
-    fi
+    # Launch attack CLI with direct injection to switch
+    xterm -title "WIDD-Attack-CLI" \
+          -geometry $TERM_ATTACKER \
+          $XTERM_OPTS \
+          -e "cd $PROJECT_DIR && sudo python3 interactive_attack.py --interface $ATTACK_IFACE; read -p 'Press Enter to close...'" &
 
-    if [ -n "$ATTACKER_PID" ]; then
-        echo "[+] Found attacker namespace (PID: $ATTACKER_PID)"
-
-        # Use nsenter to enter the network namespace
-        xterm -title "WIDD-Attack-CLI" \
-              -geometry $TERM_ATTACKER \
-              $XTERM_OPTS \
-              -e "cd $PROJECT_DIR && sudo nsenter -t $ATTACKER_PID -n python3 interactive_attack.py --interface $ATTACK_IFACE; read -p 'Press Enter to close...'" &
-
-        sleep 2
-        echo "[+] Attack CLI launched in attacker namespace (interface: $ATTACK_IFACE)"
-    else
-        echo "[WARNING] Could not find attacker process automatically"
-        echo "[*] Launching manual execution terminal..."
-
-        # Launch terminal with instructions
-        xterm -title "WIDD-Attack-CLI-MANUAL" \
-              -geometry $TERM_ATTACKER \
-              $XTERM_OPTS \
-              -e "echo 'Could not auto-launch. Run from Mininet CLI:'; echo 'mininet> attacker python3 $PROJECT_DIR/interactive_attack.py --interface attacker-wlan0'; bash" &
-
-        echo "[!] Attack CLI needs manual start from Mininet terminal"
-        echo "[!] In Mininet CLI, type: attacker python3 interactive_attack.py --interface attacker-wlan0"
-    fi
+    sleep 2
+    echo "[+] Attack CLI launched (injecting WIDD frames to $ATTACK_IFACE)"
 }
 
 launch_monitor() {
@@ -279,7 +264,7 @@ main() {
 
 
 
-    # Launch Mininet network FIRST (creates s1-eth1 interface)
+    # Launch Mininet network FIRST (creates interfaces)
     launch_mininet
 
     # Give Mininet extra time to fully stabilize

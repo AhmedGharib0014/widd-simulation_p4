@@ -232,37 +232,17 @@ def create_topology(use_bmv2=True, remote_controller=True):
     ap1.start([c0])
     s1.start([c0])
 
-    # Configure AP to mirror traffic from wireless to ethernet
-    info("*** Configuring AP traffic mirroring ***\n")
-    # Get the wireless and ethernet interface names
-    ap_wlan = None
-    ap_eth = None
-    for intf in ap1.intfs.values():
-        if 'wlan' in intf.name:
-            ap_wlan = intf.name
-        elif 'eth' in intf.name:
-            ap_eth = intf.name
-
-    if ap_wlan and ap_eth:
-        info(f"    Mirroring traffic: {ap_wlan} -> {ap_eth}\n")
-
-        # Method 1: Use tc (traffic control) to mirror ingress traffic
-        # Delete any existing qdiscs
-        ap1.cmd(f'tc qdisc del dev {ap_wlan} ingress 2>/dev/null || true')
-
-        # Create ingress qdisc on wireless interface
-        ap1.cmd(f'tc qdisc add dev {ap_wlan} ingress')
-
-        # Mirror all packets from wlan to eth using mirred action
-        ap1.cmd(f'tc filter add dev {ap_wlan} parent ffff: protocol all u32 match u32 0 0 action mirred egress redirect dev {ap_eth}')
-
-        info(f"    Traffic mirroring configured using tc\n")
-
-        # Verify tc rules
-        result = ap1.cmd(f'tc filter show dev {ap_wlan} parent ffff:')
-        info(f"    TC filter status:\n{result}")
-    else:
-        info(f"    Warning: Could not find wireless and ethernet interfaces for mirroring\n")
+    # Note on attack injection:
+    # Mininet-WiFi does NOT transmit real 802.11 frames - it simulates
+    # wireless connectivity at a higher level. For the WIDD demo, the
+    # attacker injects WIDD-formatted packets directly to the switch
+    # interface (s1-eth1) to demonstrate the P4 + OODA detection pipeline.
+    #
+    # This simulates the scenario where 802.11 frames have been captured
+    # by the AP and encapsulated into WIDD Ethernet format.
+    info("*** Attack injection note ***\n")
+    info("    For the demo, attacks are injected directly to s1-eth1\n")
+    info("    This simulates 802.11 frames captured and encapsulated by the AP\n")
 
     info("*** Network is ready ***\n")
     info("*** Topology: ***\n")

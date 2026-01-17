@@ -46,10 +46,16 @@ def build_wifi_fc(frame_type: int, subtype: int) -> bytes:
     """
     Build 802.11 Frame Control field (2 bytes).
 
-    Format: protocol(2) | type(2) | subtype(4) | flags(8)
+    P4 header layout (16 bits total):
+        bit<2>  protocolVersion;  // bits 15-14
+        bit<2>  frameType;        // bits 13-12
+        bit<4>  subType;          // bits 11-8
+        bit<8>  flags;            // bits 7-0
+
+    For Deauth (type=0, subtype=0xC): fc = 0x0C00, bytes = [0x0C, 0x00]
     """
     # protocol version = 0, flags = 0
-    fc = (frame_type << 2) | (subtype << 4)
+    fc = (0 << 14) | (frame_type << 12) | (subtype << 8) | 0
     return struct.pack('!H', fc)
 
 
