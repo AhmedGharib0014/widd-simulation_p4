@@ -21,13 +21,13 @@ MININET_PID_FILE="/tmp/widd_mininet.pid"
 
 # Screen positions (adjust based on your screen resolution)
 # Format: geometry WIDTHxHEIGHT+X+Y
-TERM_MININET="120x20+0+0"         # Top-left: Mininet Network
-TERM_CONTROLLER="120x30+0+320"    # Bottom-left: OODA Controller
-TERM_ATTACKER="120x30+850+0"      # Top-right: Attack CLI
-TERM_MONITOR="120x30+850+400"     # Bottom-right: Packet Monitor
+TERM_MININET="80x20+0+0"         # Top-left: Mininet Network
+TERM_CONTROLLER="80x30+0+350"    # Bottom-left: OODA Controller
+TERM_ATTACKER="80x30+950+0"      # Top-right: Attack CLI
+TERM_MONITOR="80x30+950+350"     # Bottom-right: Packet Monitor
 
 # XTerm colors and fonts - all terminals use the same settings
-XTERM_OPTS="-fa 'Monospace' -fs 10 -bg black -fg white"
+XTERM_OPTS="-fa 'Monospace' -fs 7 -bg black -fg white"
 
 cleanup() {
     echo "[*] Cleaning up..."
@@ -115,13 +115,6 @@ launch_mininet() {
         echo "[*] Mininet requires sudo privileges..."
     fi
 
-    # Check if Mininet-WiFi is installed
-    if ! python3 -c "import mn_wifi" 2>/dev/null; then
-        echo "[ERROR] Mininet-WiFi not installed!"
-        echo "        Install with: sudo pip3 install mininet-wifi"
-        exit 1
-    fi
-
     # Clean up any previous Mininet instances
     sudo mn -c 2>/dev/null || true
 
@@ -138,7 +131,7 @@ launch_mininet() {
     echo "[*] Waiting for network to initialize (15 seconds)..."
 
     # Wait for network to be ready
-    for i in {15..1}; do
+    for i in {10..1}; do
         echo -ne "    $i seconds remaining...\r"
         sleep 1
     done
@@ -156,7 +149,7 @@ launch_controller() {
           $XTERM_OPTS \
           -e "cd $PROJECT_DIR && sudo python3 start_server.py; read -p 'Press Enter to close...'" &
 
-    sleep 3
+    sleep 2
     echo "[+] OODA Controller started (requires sudo for packet capture)"
 }
 
@@ -174,7 +167,7 @@ launch_attacker() {
     echo "[*] Waiting for attacker station PID..."
 
     ATTACKER_PID=""
-    for i in {1..15}; do
+    for i in {1..3}; do
         # Find the attacker station process - Mininet creates a bash process for each station
         ATTACKER_PID=$(pgrep -f "mininet:attacker" 2>/dev/null | head -1)
         if [ -n "$ATTACKER_PID" ]; then
@@ -298,9 +291,11 @@ main() {
     echo "[*] Waiting for OODA Controller to initialize (3 seconds)..."
     sleep 3
 
+    launch_monitor
+
     # Launch monitoring and attack terminals
     launch_attacker
-    launch_monitor
+  
 
     echo ""
     echo "========================================"
