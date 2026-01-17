@@ -4,14 +4,15 @@ WIDD Interactive Attack CLI
 
 A colorful command-line interface for launching attacks using Scapy.
 
-This CLI sends WIDD-formatted frames (Ethernet + 802.11 headers + RF features)
-directly to the P4 switch interface for processing by the OODA Controller.
+This CLI sends WIDD-formatted frames through the attacker's wireless interface.
+The AP uses tc mirroring to capture and forward traffic to the P4 switch,
+which then sends it to the OODA Controller for detection.
 
-The frames simulate what an AP would produce after capturing real 802.11 frames
-and encapsulating them in WIDD Ethernet format.
+Traffic flow:
+    Attacker (attacker-wlan0) -> AP (ap1-wlan1) -> tc mirror -> Switch (s1) -> Controller
 
 Usage:
-    sudo python3 interactive_attack.py --interface s1-eth1
+    sudo python3 interactive_attack.py --interface attacker-wlan0
 """
 
 import sys
@@ -57,8 +58,8 @@ def print_banner():
 ║    ██║  ██║   ██║      ██║   ██║  ██║╚██████╗██║  ██╗            ║
 ║    ╚═╝  ╚═╝   ╚═╝      ╚═╝   ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝            ║
 ║                                                                   ║
-║          WIDD Attack Console - Direct Injection Mode              ║
-║       Sends WIDD frames directly to P4 switch for detection       ║
+║          WIDD Attack Console - Wireless Injection Mode            ║
+║       Sends WIDD frames via wireless to AP (tc mirrored)          ║
 ║                                                                   ║
 ╚═══════════════════════════════════════════════════════════════════╝
 """

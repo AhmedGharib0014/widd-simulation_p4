@@ -161,33 +161,53 @@ launch_controller() {
 }
 
 launch_attacker() {
-    echo "[*] Launching Attack CLI (direct injection to switch)..."
+    echo "[*] Launching Attack CLI (via attacker wireless interface)..."
 
-    # For the demo, attacks are injected directly to the switch interface
-    # This simulates 802.11 frames that have been captured and encapsulated
-    # by the AP into WIDD Ethernet format
-    ATTACK_IFACE="s1-eth1"
+    # The attacker sends frames through the AP's wireless interface
+    # TC mirroring on the AP captures and forwards to the switch
+    ATTACK_IFACE="attacker-wlan0"
 
-    echo "[*] Attack interface: $ATTACK_IFACE (direct injection to P4 switch)"
+    echo "[*] Attack interface: $ATTACK_IFACE (through AP with tc mirroring)"
 
-    # Wait for interface to be created
-    echo "[*] Waiting for switch interface..."
-    for i in {1..10}; do
-        if ip link show "$ATTACK_IFACE" &>/dev/null 2>&1; then
-            echo "[+] Found $ATTACK_IFACE"
+    # Mininet-WiFi creates station interfaces in the station's PID namespace
+    # We need to find the attacker station's PID and use mnexec to run commands
+    echo "[*] Waiting for attacker station PID..."
+
+    ATTACKER_PID=""
+    for i in {1..15}; do
+        # Find the attacker station process - Mininet creates a bash process for each station
+        ATTACKER_PID=$(pgrep -f "mininet:attacker" 2>/dev/null | head -1)
+        if [ -n "$ATTACKER_PID" ]; then
+            echo "[+] Found attacker station PID: $ATTACKER_PID"
             break
         fi
         sleep 1
     done
 
-    # Launch attack CLI with direct injection to switch
-    xterm -title "WIDD-Attack-CLI" \
-          -geometry $TERM_ATTACKER \
-          $XTERM_OPTS \
-          -e "cd $PROJECT_DIR && sudo python3 interactive_attack.py --interface $ATTACK_IFACE; read -p 'Press Enter to close...'" &
+    if [ -z "$ATTACKER_PID" ]; then
+        echo "[!] Warning: Could not find attacker station PID"
+        echo "[*] Mininet processes:"
+        pgrep -a mininet 2>/dev/null | head -5 || echo "  (none found)"
+        echo "[*] Falling back to direct interface access..."
+    fi
+
+    # Launch attack CLI using mnexec to enter the attacker's namespace
+    if [ -n "$ATTACKER_PID" ]; then
+        # Use mnexec to run in the attacker's namespace
+        xterm -title "WIDD-Attack-CLI" \
+              -geometry $TERM_ATTACKER \
+              $XTERM_OPTS \
+              -e "cd $PROJECT_DIR && sudo mnexec -a $ATTACKER_PID python3 interactive_attack.py --interface $ATTACK_IFACE; read -p 'Press Enter to close...'" &
+    else
+        # Fallback: try direct access (interface might be in root namespace)
+        xterm -title "WIDD-Attack-CLI" \
+              -geometry $TERM_ATTACKER \
+              $XTERM_OPTS \
+              -e "cd $PROJECT_DIR && sudo python3 interactive_attack.py --interface $ATTACK_IFACE; read -p 'Press Enter to close...'" &
+    fi
 
     sleep 2
-    echo "[+] Attack CLI launched (injecting WIDD frames to $ATTACK_IFACE)"
+    echo "[+] Attack CLI launched (sending frames via $ATTACK_IFACE)"
 }
 
 launch_monitor() {

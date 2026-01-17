@@ -132,6 +132,74 @@ class P4Switch(Switch):
         Switch.stop(self)
 
 
+def setup_tc_mirroring(ap, switch):
+    """
+    Setup tc mirroring to capture traffic from AP wireless interface
+    and forward it to the switch.
+
+    This uses tc mirred action to mirror ingress traffic from the AP's
+    wireless interface to the interface connected to the bmv2 switch.
+    """
+    # Find the AP's wireless interface (ap1-wlan1)
+    ap_wlan_intf = None
+    ap_eth_intf = None
+
+    for intf in ap.intfs.values():
+        intf_name = intf.name
+        if 'wlan' in intf_name:
+            ap_wlan_intf = intf_name
+        elif 'eth' in intf_name or intf_name.startswith(f'{ap.name}-'):
+            # This is the interface connected to the switch
+            if 'wlan' not in intf_name:
+                ap_eth_intf = intf_name
+
+    if not ap_wlan_intf:
+        info("*** Warning: Could not find AP wireless interface for mirroring\n")
+        return
+
+    if not ap_eth_intf:
+        # Try to find the interface connected to switch
+        for intf in ap.intfs.values():
+            if intf.name != ap_wlan_intf and intf.name != 'lo':
+                ap_eth_intf = intf.name
+                break
+
+    if not ap_eth_intf:
+        info("*** Warning: Could not find AP-to-switch interface for mirroring\n")
+        return
+
+    info(f"*** Mirroring: {ap_wlan_intf} -> {ap_eth_intf}\n")
+
+    # Clear any existing tc rules
+    subprocess.run(['tc', 'qdisc', 'del', 'dev', ap_wlan_intf, 'ingress'],
+                   stderr=subprocess.DEVNULL, check=False)
+
+    # Add ingress qdisc to the wireless interface
+    result = subprocess.run(
+        ['tc', 'qdisc', 'add', 'dev', ap_wlan_intf, 'ingress'],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        info(f"*** Warning: Failed to add ingress qdisc: {result.stderr}\n")
+        return
+
+    # Add mirror filter to copy all ingress traffic to the switch interface
+    # This mirrors packets from wireless to the wired interface going to the switch
+    result = subprocess.run([
+        'tc', 'filter', 'add', 'dev', ap_wlan_intf,
+        'parent', 'ffff:',
+        'protocol', 'all',
+        'u32', 'match', 'u32', '0', '0',
+        'action', 'mirred', 'egress', 'mirror', 'dev', ap_eth_intf
+    ], capture_output=True, text=True)
+
+    if result.returncode != 0:
+        info(f"*** Warning: Failed to add mirror filter: {result.stderr}\n")
+        return
+
+    info(f"*** TC mirroring active: {ap_wlan_intf} -> {ap_eth_intf}\n")
+
+
 def create_topology(use_bmv2=True, remote_controller=True):
     """Create WIDD simulation topology.
 
@@ -232,17 +300,13 @@ def create_topology(use_bmv2=True, remote_controller=True):
     ap1.start([c0])
     s1.start([c0])
 
-    # Note on attack injection:
-    # Mininet-WiFi does NOT transmit real 802.11 frames - it simulates
-    # wireless connectivity at a higher level. For the WIDD demo, the
-    # attacker injects WIDD-formatted packets directly to the switch
-    # interface (s1-eth1) to demonstrate the P4 + OODA detection pipeline.
-    #
-    # This simulates the scenario where 802.11 frames have been captured
-    # by the AP and encapsulated into WIDD Ethernet format.
-    info("*** Attack injection note ***\n")
-    info("    For the demo, attacks are injected directly to s1-eth1\n")
-    info("    This simulates 802.11 frames captured and encapsulated by the AP\n")
+    # Setup tc mirroring on AP to capture wireless traffic and forward to switch
+    # This mirrors traffic from ap1-wlan1 (wireless interface) to the switch link
+    info("*** Setting up tc mirroring on AP ***\n")
+    setup_tc_mirroring(ap1, s1)
+
+    info("*** TC mirroring configured ***\n")
+    info("    Traffic from AP wireless interface is mirrored to the switch\n")
 
     info("*** Network is ready ***\n")
     info("*** Topology: ***\n")
@@ -287,9 +351,21 @@ def create_topology(use_bmv2=True, remote_controller=True):
             info(f"\n    ✓ ATTACKER INTERFACE: {wireless_intf}\n")
             info(f"    ✓ MAC: {attacker_intfs[0].MAC()}\n")
             info(f"    ✓ IP: {attacker_intfs[0].IP()}\n")
-            info(f"\n    NOTE: This interface exists in the attacker's network namespace\n")
-            info(f"    To run commands in this namespace, use:\n")
-            info(f"      mininet> attacker <command>\n")
+
+            # Check if interface exists in root namespace or needs namespace
+            result = subprocess.run(['ip', 'link', 'show', wireless_intf],
+                                   capture_output=True, text=True)
+            if result.returncode == 0:
+                info(f"\n    ✓ Interface is in ROOT namespace (no netns needed)\n")
+                info(f"    Run: sudo python3 interactive_attack.py --interface {wireless_intf}\n")
+            else:
+                info(f"\n    ✓ Interface is in station's network namespace\n")
+                info(f"    To run commands in this namespace, use:\n")
+                info(f"      mininet> attacker <command>\n")
+
+            # Save interface info for the demo launcher
+            with open('/tmp/widd_attacker_intf.txt', 'w') as f:
+                f.write(wireless_intf)
         else:
             info("    Warning: No interfaces found for attacker station\n")
 
