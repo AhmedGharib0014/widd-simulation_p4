@@ -233,12 +233,34 @@ control WiddIngress(
         default_action = NoAction();
     }
 
+    // Table for blocking malicious sources (populated by controller)
+    table blocklist {
+        key = {
+            hdr.wifiAddr.addr2: exact;  // Source MAC (transmitter)
+        }
+        actions = {
+            drop;
+            NoAction;
+        }
+        size = 256;
+        default_action = NoAction();
+    }
+
     apply {
         // Initialize metadata
         meta.sendToCpu = 0;
         meta.dropPacket = 0;
         meta.isDeauth = 0;
         meta.cpuReason = 0;
+
+        // Check blocklist first - drop packets from known attackers
+        if (hdr.wifiAddr.isValid()) {
+            blocklist.apply();
+            if (meta.dropPacket == 1) {
+                // Packet is from blocked attacker, already marked for drop
+                return;
+            }
+        }
 
         // OBSERVE: Check if this is a WIDD frame
         if (hdr.wifiFC.isValid()) {

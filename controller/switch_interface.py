@@ -233,6 +233,68 @@ class SwitchInterface:
             print(f"Failed to delete table entry: {e}")
             return False
 
+    def block_attacker(self, mac_address: str) -> Optional[int]:
+        """
+        Add attacker MAC to blocklist table in P4 switch.
+
+        Args:
+            mac_address: MAC address to block (format: 'xx:xx:xx:xx:xx:xx')
+
+        Returns:
+            Entry handle if successful, None otherwise
+        """
+        # Convert MAC string to bytes
+        mac_bytes = bytes.fromhex(mac_address.replace(':', ''))
+
+        if not self.connected or self.client is None:
+            print(f"[SwitchInterface] Not connected - cannot block {mac_address}")
+            # Return a fake handle for mock mode
+            return 0
+
+        try:
+            from bm_runtime.standard.ttypes import BmMatchParam, BmMatchParamType, BmMatchParamExact, BmAddEntryOptions
+
+            match_spec = [
+                BmMatchParam(type=BmMatchParamType.EXACT,
+                            exact=BmMatchParamExact(mac_bytes))
+            ]
+
+            entry_handle = self.client.bm_mt_add_entry(
+                0,  # cxt_id
+                "WiddIngress.blocklist",  # table name
+                match_spec,
+                "WiddIngress.drop",  # action name
+                [],  # no action params
+                BmAddEntryOptions(priority=0)
+            )
+            print(f"[SwitchInterface] Blocked attacker {mac_address} (handle={entry_handle})")
+            return entry_handle
+
+        except Exception as e:
+            print(f"[SwitchInterface] Failed to block attacker {mac_address}: {e}")
+            return None
+
+    def unblock_attacker(self, entry_handle: int) -> bool:
+        """
+        Remove attacker from blocklist table.
+
+        Args:
+            entry_handle: Handle returned from block_attacker()
+
+        Returns:
+            True if successful
+        """
+        if not self.connected or self.client is None:
+            return True  # Mock mode
+
+        try:
+            self.client.bm_mt_delete_entry(0, "WiddIngress.blocklist", entry_handle)
+            print(f"[SwitchInterface] Unblocked attacker (handle={entry_handle})")
+            return True
+        except Exception as e:
+            print(f"[SwitchInterface] Failed to unblock attacker: {e}")
+            return False
+
     def read_register(self, register_name: str, index: int) -> Optional[int]:
         """Read value from a P4 register."""
         if not self.connected or self.client is None:

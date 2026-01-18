@@ -88,8 +88,12 @@ Examples:
     # Define callback to process received packets
     def handle_packet(frame_info):
         """Process received WIDD frame through OODA controller."""
-        from controller.switch_interface import PacketInEvent
+        from controller.ooda_controller import ParsedFrame
         from controller.mocc import RFFeatures
+        from controller.switch_interface import (
+            CPU_REASON_DEAUTH, CPU_REASON_AUTH, CPU_REASON_ASSOC,
+            CPU_REASON_BEACON, CPU_REASON_DISASSOC, CPU_REASON_DATA
+        )
 
         try:
             # Check if frame parsing had errors
@@ -98,28 +102,33 @@ Examples:
                 return
 
             # Log received frame
-            frame_type = frame_info.get('frame_type', 'Unknown')
-            subtype = frame_info.get('subtype', 'Unknown')
+            frame_type_str = frame_info.get('frame_type', 'Unknown')
+            subtype_str = frame_info.get('subtype', 'Unknown')
             src_mac = frame_info.get('src_mac', 'Unknown')
             rssi = frame_info.get('rssi', 0)
 
-            print(f"[PacketReceiver] Received: {frame_type}/{subtype} from {src_mac} RSSI={rssi}dBm")
+            print(f"[PacketReceiver] Received: {frame_type_str}/{subtype_str} from {src_mac} RSSI={rssi}dBm")
 
-            # Create a mock PacketInEvent from frame_info to use controller's OODA pipeline
-            # The controller's _handle_packet_in expects a PacketInEvent with raw_packet
-            # But since we already parsed the packet, we create the event with parsed values
-            class ParsedPacketInEvent:
-                """Wrapper to pass parsed frame_info to controller's _handle_packet_in."""
-                def __init__(self, frame_info):
-                    self.reason = frame_info.get('cpu_reason', 0)
-                    self.orig_port = frame_info.get('cpu_orig_port', 0)
-                    self.rssi = frame_info.get('rssi', 0)
-                    self.payload = frame_info.get('raw_payload', b'')
-                    self.frame_info = frame_info  # Store parsed info
+            # Create ParsedFrame dataclass from frame_info
+            # This allows us to use the existing _process_* methods in the controller
+            frame = ParsedFrame(
+                eth_dst=bytes.fromhex(frame_info.get('dst_mac', '00:00:00:00:00:00').replace(':', '')),
+                eth_src=bytes.fromhex(frame_info.get('src_mac', '00:00:00:00:00:00').replace(':', '')),
+                eth_type=0x88B5,  # WIDD ethertype
+                frame_type=frame_info.get('frame_type_num', 0),
+                subtype=frame_info.get('subtype_num', 0),
+                addr1=frame_info.get('dst_mac', '00:00:00:00:00:00'),    # Receiver
+                addr2=frame_info.get('src_mac', '00:00:00:00:00:00'),    # Transmitter
+                addr3=frame_info.get('bssid', '00:00:00:00:00:00'),      # BSSID
+                rssi=rssi,
+                phase_offset=frame_info.get('phase', 0),
+                pilot_offset=frame_info.get('pilot', 0),
+                mag_squared=frame_info.get('mag', 0),
+                cpu_reason=frame_info.get('cpu_reason', 0),
+                orig_port=frame_info.get('cpu_orig_port', 0)
+            )
 
-            event = ParsedPacketInEvent(frame_info)
-
-            # Extract RF features for MOCC
+            # Create RFFeatures for MOCC
             rf_features = RFFeatures(
                 rssi=rssi,
                 phase_offset=frame_info.get('phase', 0),
@@ -127,30 +136,24 @@ Examples:
                 mag_squared=frame_info.get('mag', 0)
             )
 
-            # Map cpu_reason to CPU_REASON constants
-            from controller.switch_interface import (
-                CPU_REASON_DEAUTH, CPU_REASON_AUTH, CPU_REASON_ASSOC,
-                CPU_REASON_BEACON, CPU_REASON_DISASSOC, CPU_REASON_DATA
-            )
-
             cpu_reason = frame_info.get('cpu_reason', 0)
 
-            # Process through controller's OODA pipeline based on CPU reason
-            if cpu_reason == CPU_REASON_DEAUTH or subtype == 'Deauth':
-                controller._process_deauth_from_frame_info(src_mac, rf_features, frame_info)
-            elif cpu_reason == CPU_REASON_DISASSOC or subtype == 'Disassoc':
-                controller._process_disassoc_from_frame_info(src_mac, rf_features, frame_info)
-            elif cpu_reason == CPU_REASON_AUTH or subtype == 'Auth':
-                controller._process_auth_from_frame_info(src_mac, frame_info)
-            elif cpu_reason == CPU_REASON_ASSOC or subtype == 'Assoc Req':
-                controller._process_assoc_from_frame_info(src_mac, frame_info)
-            elif cpu_reason == CPU_REASON_BEACON or subtype == 'Beacon':
-                controller._process_beacon_from_frame_info(frame_info.get('bssid', ''), frame_info)
-            elif cpu_reason == CPU_REASON_DATA or frame_type == 'Data':
-                controller._process_data_from_frame_info(src_mac, rf_features, frame_info)
+            # Process through controller's OODA pipeline using existing methods
+            if cpu_reason == CPU_REASON_DEAUTH or subtype_str == 'Deauth':
+                controller._process_deauth(frame, rf_features)
+            elif cpu_reason == CPU_REASON_DISASSOC or subtype_str == 'Disassoc':
+                controller._process_disassoc(frame, rf_features)
+            elif cpu_reason == CPU_REASON_AUTH or subtype_str == 'Auth':
+                controller._process_auth(frame)
+            elif cpu_reason == CPU_REASON_ASSOC or subtype_str == 'Assoc Req':
+                controller._process_assoc(frame)
+            elif cpu_reason == CPU_REASON_BEACON or subtype_str == 'Beacon':
+                controller._process_beacon(frame)
+            elif cpu_reason == CPU_REASON_DATA or frame_type_str == 'Data':
+                controller._process_data(frame, rf_features)
             else:
                 # Unknown frame type, log and skip
-                print(f"[PacketReceiver] Unknown frame type: cpu_reason={cpu_reason}, subtype={subtype}")
+                print(f"[PacketReceiver] Unknown frame type: cpu_reason={cpu_reason}, subtype={subtype_str}")
 
         except Exception as e:
             logger.system_info(f"[PacketReceiver] Error processing frame: {e}")
