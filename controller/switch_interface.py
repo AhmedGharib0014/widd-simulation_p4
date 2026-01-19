@@ -7,6 +7,7 @@ Provides:
 - Table entry management (add/delete/modify)
 - Register read/write
 - Packet-In/Packet-Out handling via CPU port
+- WIDD frame parsing (consolidated from packet_receiver.py)
 """
 
 import sys
@@ -16,6 +17,7 @@ import struct
 from threading import Thread, Event
 from queue import Queue
 from typing import Optional, Callable, Dict, Any
+from dataclasses import dataclass
 
 # Add bmv2 thrift paths
 BMV2_THRIFT_PATH = '/usr/local/lib/python3/dist-packages/bm_runtime'
@@ -44,6 +46,15 @@ except ImportError:
 CPU_HEADER_FORMAT = '!BBH'
 CPU_HEADER_SIZE = 4
 
+# Header sizes for WIDD frame parsing
+ETHERNET_SIZE = 14       # dst(6) + src(6) + type(2)
+WIFI_FC_SIZE = 2         # Frame Control
+WIFI_ADDR_SIZE = 20      # addr1(6) + addr2(6) + addr3(6) + seqCtrl(2)
+RF_FEATURES_SIZE = 8     # rssi(2) + phase(2) + pilot(2) + mag(2)
+
+# WIDD Ethertype
+ETHERTYPE_WIDD = 0x88B5
+
 # CPU reasons (from P4 program)
 CPU_REASON_DEAUTH = 1
 CPU_REASON_ASSOC = 2
@@ -52,9 +63,39 @@ CPU_REASON_BEACON = 4
 CPU_REASON_DISASSOC = 5
 CPU_REASON_DATA = 6
 
+# Frame type names
+FRAME_TYPE_NAMES = {0: 'Management', 1: 'Control', 2: 'Data'}
+SUBTYPE_NAMES = {
+    0x0: 'Assoc Req', 0x1: 'Assoc Resp', 0x2: 'Reassoc Req', 0x3: 'Reassoc Resp',
+    0x4: 'Probe Req', 0x5: 'Probe Resp', 0x8: 'Beacon',
+    0xA: 'Disassoc', 0xB: 'Auth', 0xC: 'Deauth'
+}
+
+
+@dataclass
+class WIDDFrameInfo:
+    """Parsed WIDD frame information."""
+    frame_type: str = 'Unknown'
+    subtype: str = 'Unknown'
+    frame_type_num: int = 0
+    subtype_num: int = 0
+    src_mac: str = '00:00:00:00:00:00'
+    dst_mac: str = '00:00:00:00:00:00'
+    bssid: str = '00:00:00:00:00:00'
+    seq_ctrl: int = 0
+    rssi: int = 0
+    phase: int = 0
+    pilot: int = 0
+    mag: int = 0
+    cpu_reason: int = 0
+    cpu_orig_port: int = 0
+    raw_payload: bytes = b''
+    raw_bytes: bytes = b''
+    error: str = None
+
 
 class PacketInEvent:
-    """Represents a Packet-In event from bmv2."""
+    """Represents a Packet-In event from bmv2 with full WIDD frame parsing."""
 
     def __init__(self, raw_packet: bytes):
         self.raw_packet = raw_packet
@@ -62,17 +103,97 @@ class PacketInEvent:
         self.orig_port = 0
         self.rssi = 0
         self.payload = b''
+        self.frame_info: Optional[WIDDFrameInfo] = None
 
         self._parse()
 
     def _parse(self):
-        """Parse CPU header from packet."""
-        if len(self.raw_packet) >= CPU_HEADER_SIZE:
-            self.reason, self.orig_port, self.rssi = struct.unpack(
-                CPU_HEADER_FORMAT,
-                self.raw_packet[:CPU_HEADER_SIZE]
+        """Parse CPU header and WIDD frame from packet."""
+        if len(self.raw_packet) < CPU_HEADER_SIZE:
+            return
+
+        # Parse CPU header
+        self.reason, self.orig_port, self.rssi = struct.unpack(
+            CPU_HEADER_FORMAT,
+            self.raw_packet[:CPU_HEADER_SIZE]
+        )
+        self.payload = self.raw_packet[CPU_HEADER_SIZE:]
+
+        # Parse full WIDD frame
+        self.frame_info = self._parse_widd_frame()
+
+    def _parse_widd_frame(self) -> WIDDFrameInfo:
+        """Parse full WIDD frame structure.
+
+        P4 deparser output format:
+        [CPU Header 4B][Ethernet 14B][WiFi FC 2B][WiFi Addr 20B][RF Features 8B][Payload]
+        """
+        raw_bytes = self.raw_packet
+        min_size = CPU_HEADER_SIZE + ETHERNET_SIZE + WIFI_FC_SIZE + WIFI_ADDR_SIZE + RF_FEATURES_SIZE
+
+        if len(raw_bytes) < min_size:
+            return WIDDFrameInfo(
+                error=f'Packet too short ({len(raw_bytes)} < {min_size} bytes)',
+                raw_bytes=raw_bytes
             )
-            self.payload = self.raw_packet[CPU_HEADER_SIZE:]
+
+        offset = CPU_HEADER_SIZE
+
+        # Parse Ethernet Header (14 bytes)
+        eth_dst = ':'.join(f'{b:02x}' for b in raw_bytes[offset:offset + 6])
+        eth_src = ':'.join(f'{b:02x}' for b in raw_bytes[offset + 6:offset + 12])
+        eth_type = int.from_bytes(raw_bytes[offset + 12:offset + 14], 'big')
+        offset += ETHERNET_SIZE
+
+        # Check if this is a WIDD packet
+        if eth_type != ETHERTYPE_WIDD:
+            return WIDDFrameInfo(
+                error=f'Not a WIDD packet (ethertype=0x{eth_type:04x})',
+                raw_bytes=raw_bytes
+            )
+
+        # Parse WiFi Frame Control (2 bytes)
+        wifi_fc = int.from_bytes(raw_bytes[offset:offset + 2], 'big')
+        offset += WIFI_FC_SIZE
+
+        # Parse WiFi Addresses (20 bytes)
+        addr1 = ':'.join(f'{b:02x}' for b in raw_bytes[offset:offset + 6])      # Receiver
+        addr2 = ':'.join(f'{b:02x}' for b in raw_bytes[offset + 6:offset + 12])  # Transmitter
+        addr3 = ':'.join(f'{b:02x}' for b in raw_bytes[offset + 12:offset + 18]) # BSSID
+        seq_ctrl = int.from_bytes(raw_bytes[offset + 18:offset + 20], 'big')
+        offset += WIFI_ADDR_SIZE
+
+        # Parse RF Features (8 bytes)
+        rssi = int.from_bytes(raw_bytes[offset:offset + 2], 'big', signed=True)
+        phase = int.from_bytes(raw_bytes[offset + 2:offset + 4], 'big')
+        pilot = int.from_bytes(raw_bytes[offset + 4:offset + 6], 'big')
+        mag = int.from_bytes(raw_bytes[offset + 6:offset + 8], 'big')
+        offset += RF_FEATURES_SIZE
+
+        # Extract frame type and subtype from FC
+        # P4 FC format: protocol(2) | type(2) | subtype(4) | flags(8)
+        # Bits: [15-14: proto] [13-12: type] [11-8: subtype] [7-0: flags]
+        frame_type = (wifi_fc >> 12) & 0x3
+        subtype = (wifi_fc >> 8) & 0xF
+
+        return WIDDFrameInfo(
+            frame_type=FRAME_TYPE_NAMES.get(frame_type, f'Unknown({frame_type})'),
+            subtype=SUBTYPE_NAMES.get(subtype, f'0x{subtype:X}'),
+            frame_type_num=frame_type,
+            subtype_num=subtype,
+            src_mac=addr2,
+            dst_mac=addr1,
+            bssid=addr3,
+            seq_ctrl=seq_ctrl,
+            rssi=rssi,
+            phase=phase,
+            pilot=pilot,
+            mag=mag,
+            cpu_reason=self.reason,
+            cpu_orig_port=self.orig_port,
+            raw_payload=raw_bytes[offset:] if len(raw_bytes) > offset else b'',
+            raw_bytes=raw_bytes
+        )
 
     def get_reason_name(self) -> str:
         """Get human-readable reason name."""
@@ -85,6 +206,33 @@ class PacketInEvent:
             CPU_REASON_DATA: 'DATA',
         }
         return reasons.get(self.reason, f'UNKNOWN({self.reason})')
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary format (compatible with old PacketReceiver callback)."""
+        if self.frame_info is None:
+            return {'error': 'No frame info'}
+
+        if self.frame_info.error:
+            return {'error': self.frame_info.error}
+
+        return {
+            'frame_type': self.frame_info.frame_type,
+            'subtype': self.frame_info.subtype,
+            'frame_type_num': self.frame_info.frame_type_num,
+            'subtype_num': self.frame_info.subtype_num,
+            'src_mac': self.frame_info.src_mac,
+            'dst_mac': self.frame_info.dst_mac,
+            'bssid': self.frame_info.bssid,
+            'seq_ctrl': self.frame_info.seq_ctrl,
+            'rssi': self.frame_info.rssi,
+            'phase': self.frame_info.phase,
+            'pilot': self.frame_info.pilot,
+            'mag': self.frame_info.mag,
+            'cpu_reason': self.frame_info.cpu_reason,
+            'cpu_orig_port': self.frame_info.cpu_orig_port,
+            'raw_payload': self.frame_info.raw_payload,
+            'raw_bytes': self.frame_info.raw_bytes
+        }
 
     def __repr__(self):
         return (f"PacketInEvent(reason={self.get_reason_name()}, "
@@ -368,35 +516,55 @@ class SwitchInterface:
             self.packet_in_thread.join(timeout=2)
 
     def _packet_in_loop(self, iface: str):
-        """Internal loop for receiving Packet-In events."""
+        """Internal loop for receiving Packet-In events using Scapy."""
         try:
-            # Create raw socket to receive packets
-            self.cpu_socket = socket.socket(
-                socket.AF_PACKET,
-                socket.SOCK_RAW,
-                socket.htons(0x0003)  # ETH_P_ALL
-            )
-            self.cpu_socket.bind((iface, 0))
-            self.cpu_socket.settimeout(1.0)
+            from scapy.all import sniff
 
-            while not self.stop_event.is_set():
+            print(f"[SwitchInterface] Starting Packet-In listener on {iface}")
+            print(f"[SwitchInterface] Expecting P4 format: [CPU(4)][Ether(14)][WiFi FC(2)][WiFi Addr(20)][RF(8)]")
+
+            def handle_packet(pkt):
+                if self.stop_event.is_set():
+                    return
+
                 try:
-                    raw_packet, addr = self.cpu_socket.recvfrom(65535)
+                    raw_packet = bytes(pkt)
                     event = PacketInEvent(raw_packet)
+
+                    # Log parsed frame info
+                    if event.frame_info and not event.frame_info.error:
+                        print(f"[SwitchInterface] Received: {event.frame_info.frame_type}/{event.frame_info.subtype} "
+                              f"from {event.frame_info.src_mac} RSSI={event.frame_info.rssi}dBm")
 
                     if self.packet_in_callback:
                         self.packet_in_callback(event)
                     else:
                         self.packet_in_queue.put(event)
 
-                except socket.timeout:
-                    continue
                 except Exception as e:
-                    if not self.stop_event.is_set():
-                        print(f"Packet-In error: {e}")
+                    print(f"[SwitchInterface] Packet-In error: {e}")
+                    import traceback
+                    traceback.print_exc()
 
+            # Use Scapy's sniff for reliable packet capture
+            sniff(
+                iface=iface,
+                prn=handle_packet,
+                filter=None,
+                stop_filter=lambda x: self.stop_event.is_set(),
+                store=False
+            )
+
+        except PermissionError as e:
+            print(f"[SwitchInterface] Permission Error: {e}")
+            print("[SwitchInterface] This script must be run with sudo/root privileges")
+        except OSError as e:
+            print(f"[SwitchInterface] Interface Error: {e}")
+            print(f"[SwitchInterface] Interface '{iface}' may not exist or is not accessible")
         except Exception as e:
-            print(f"Failed to start Packet-In listener: {e}")
+            print(f"[SwitchInterface] Failed to start Packet-In listener: {e}")
+            import traceback
+            traceback.print_exc()
 
     def send_packet_out(self, port: int, packet: bytes, iface: str = None) -> bool:
         """
@@ -450,9 +618,18 @@ class SwitchInterface:
 
 # Simple test
 if __name__ == '__main__':
+    import time
+
     print("Testing SwitchInterface...")
 
-    sw = SwitchInterface(thrift_port=9090)
+    def print_frame(event: PacketInEvent):
+        if event.frame_info and not event.frame_info.error:
+            print(f"Received: {event.frame_info.frame_type} / {event.frame_info.subtype} "
+                  f"from {event.frame_info.src_mac} RSSI={event.frame_info.rssi}dBm")
+        else:
+            print(f"Received event: {event}")
+
+    sw = SwitchInterface(thrift_port=9090, cpu_iface='s1-cpu-h')
     if sw.connect():
         print("Connection test passed")
 
@@ -460,6 +637,16 @@ if __name__ == '__main__':
         counter = sw.read_counter('frameCounter', 0)
         if counter:
             print(f"Frame counter: {counter}")
+
+        # Test Packet-In listener
+        print("\nStarting Packet-In listener (press Ctrl+C to stop)...")
+        sw.start_packet_in_listener(callback=print_frame)
+
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            pass
 
         sw.disconnect()
     else:

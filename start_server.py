@@ -18,7 +18,11 @@ import os
 import argparse
 from controller.ooda_controller import OODAController
 from controller.logger import logger
-from controller.packet_receiver import PacketReceiver
+from controller.switch_interface import (
+    SwitchInterface, PacketInEvent,
+    CPU_REASON_DEAUTH, CPU_REASON_AUTH, CPU_REASON_ASSOC,
+    CPU_REASON_BEACON, CPU_REASON_DISASSOC, CPU_REASON_DATA
+)
 
 
 def main():
@@ -89,19 +93,18 @@ Examples:
     logger.system_info(f"MOCC training complete: {status['samples']} samples, trained={status['trained']}")
 
     # Define callback to process received packets
-    def handle_packet(frame_info):
+    def handle_packet(event: PacketInEvent):
         """Process received WIDD frame through OODA controller."""
         from controller.ooda_controller import ParsedFrame
         from controller.mocc import RFFeatures
-        from controller.switch_interface import (
-            CPU_REASON_DEAUTH, CPU_REASON_AUTH, CPU_REASON_ASSOC,
-            CPU_REASON_BEACON, CPU_REASON_DISASSOC, CPU_REASON_DATA
-        )
 
         try:
+            # Get frame_info from the PacketInEvent
+            frame_info = event.to_dict()
+
             # Check if frame parsing had errors
             if 'error' in frame_info:
-                logger.system_info(f"[PacketReceiver] Error parsing frame: {frame_info['error']}")
+                logger.system_info(f"[SwitchInterface] Error parsing frame: {frame_info['error']}")
                 return
 
             # Log received frame
@@ -110,7 +113,7 @@ Examples:
             src_mac = frame_info.get('src_mac', 'Unknown')
             rssi = frame_info.get('rssi', 0)
 
-            print(f"[PacketReceiver] Received: {frame_type_str}/{subtype_str} from {src_mac} RSSI={rssi}dBm")
+            print(f"[SwitchInterface] Received: {frame_type_str}/{subtype_str} from {src_mac} RSSI={rssi}dBm")
 
             # Create ParsedFrame dataclass from frame_info
             # This allows us to use the existing _process_* methods in the controller
@@ -157,10 +160,10 @@ Examples:
                 controller._process_data(frame, rf_features)
             else:
                 # Unknown frame type, log and skip
-                print(f"[PacketReceiver] Unknown frame type: cpu_reason={cpu_reason}, subtype={subtype_str}")
+                print(f"[SwitchInterface] Unknown frame type: cpu_reason={cpu_reason}, subtype={subtype_str}")
 
         except Exception as e:
-            logger.system_info(f"[PacketReceiver] Error processing frame: {e}")
+            logger.system_info(f"[SwitchInterface] Error processing frame: {e}")
             import traceback
             traceback.print_exc()
 
@@ -198,10 +201,10 @@ Examples:
 
         logger.system_info("\nTrying to continue anyway...")
 
-    # Create and start packet receiver
-    logger.system_info(f"Starting packet receiver on {cpu_interface}...")
-    receiver = PacketReceiver(interface=cpu_interface, callback=handle_packet)
-    receiver.start()
+    # Create SwitchInterface for Packet-In/Out handling
+    logger.system_info(f"Starting SwitchInterface on {cpu_interface}...")
+    switch_interface = SwitchInterface(cpu_iface=cpu_interface)
+    switch_interface.start_packet_in_listener(callback=handle_packet)
 
     # Ready to receive packets from P4 switch
     print("\n" + "="*70)
@@ -218,8 +221,8 @@ Examples:
             time.sleep(1)
     except KeyboardInterrupt:
         print("\n")
-        logger.system_info("Stopping packet receiver...")
-        receiver.stop()
+        logger.system_info("Stopping SwitchInterface...")
+        switch_interface.stop_packet_in_listener()
         logger.system_stop("OODA Controller")
         logger.print_stats()
         sys.exit(0)
