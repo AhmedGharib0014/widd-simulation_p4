@@ -11,7 +11,9 @@
         ["metadata_t.dropPacket", 1, false],
         ["metadata_t.isDeauth", 1, false],
         ["metadata_t.isKnownDevice", 1, false],
-        ["_padding_0", 3, false]
+        ["metadata_t.isPacketOut", 1, false],
+        ["metadata_t.packetOutPort", 8, false],
+        ["_padding_0", 2, false]
       ]
     },
     {
@@ -168,6 +170,81 @@
         {
           "name" : "start",
           "id" : 0,
+          "parser_ops" : [],
+          "transitions" : [
+            {
+              "type" : "hexstr",
+              "value" : "0x00ff",
+              "mask" : null,
+              "next_state" : "parse_cpu_header"
+            },
+            {
+              "type" : "default",
+              "value" : null,
+              "mask" : null,
+              "next_state" : "parse_ethernet"
+            }
+          ],
+          "transition_key" : [
+            {
+              "type" : "field",
+              "value" : ["standard_metadata", "ingress_port"]
+            }
+          ]
+        },
+        {
+          "name" : "parse_cpu_header",
+          "id" : 1,
+          "parser_ops" : [
+            {
+              "parameters" : [
+                {
+                  "type" : "regular",
+                  "value" : "cpu"
+                }
+              ],
+              "op" : "extract"
+            },
+            {
+              "parameters" : [
+                {
+                  "type" : "field",
+                  "value" : ["scalars", "metadata_t.isPacketOut"]
+                },
+                {
+                  "type" : "hexstr",
+                  "value" : "0x01"
+                }
+              ],
+              "op" : "set"
+            },
+            {
+              "parameters" : [
+                {
+                  "type" : "field",
+                  "value" : ["scalars", "metadata_t.packetOutPort"]
+                },
+                {
+                  "type" : "field",
+                  "value" : ["cpu", "origPort"]
+                }
+              ],
+              "op" : "set"
+            }
+          ],
+          "transitions" : [
+            {
+              "type" : "default",
+              "value" : null,
+              "mask" : null,
+              "next_state" : null
+            }
+          ],
+          "transition_key" : []
+        },
+        {
+          "name" : "parse_ethernet",
+          "id" : 2,
           "parser_ops" : [
             {
               "parameters" : [
@@ -202,7 +279,7 @@
         },
         {
           "name" : "parse_wifi_fc",
-          "id" : 1,
+          "id" : 3,
           "parser_ops" : [
             {
               "parameters" : [
@@ -221,7 +298,33 @@
                 }
               ],
               "op" : "extract"
+            }
+          ],
+          "transitions" : [
+            {
+              "type" : "hexstr",
+              "value" : "0x01",
+              "mask" : null,
+              "next_state" : null
             },
+            {
+              "type" : "default",
+              "value" : null,
+              "mask" : null,
+              "next_state" : "parse_rf_features"
+            }
+          ],
+          "transition_key" : [
+            {
+              "type" : "field",
+              "value" : ["scalars", "metadata_t.isPacketOut"]
+            }
+          ]
+        },
+        {
+          "name" : "parse_rf_features",
+          "id" : 4,
+          "parser_ops" : [
             {
               "parameters" : [
                 {
@@ -252,7 +355,7 @@
       "id" : 0,
       "source_info" : {
         "filename" : "widd.p4",
-        "line" : 346,
+        "line" : 393,
         "column" : 8,
         "source_fragment" : "WiddDeparser"
       },
@@ -267,7 +370,7 @@
       "id" : 0,
       "source_info" : {
         "filename" : "widd.p4",
-        "line" : 176,
+        "line" : 201,
         "column" : 38,
         "source_fragment" : "frameCounter"
       },
@@ -281,7 +384,7 @@
       "id" : 0,
       "source_info" : {
         "filename" : "widd.p4",
-        "line" : 179,
+        "line" : 204,
         "column" : 26,
         "source_fragment" : "knownDevices"
       },
@@ -313,7 +416,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 183,
+            "line" : 208,
             "column" : 8,
             "source_fragment" : "mark_to_drop(standard_metadata)"
           }
@@ -332,7 +435,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 184,
+            "line" : 209,
             "column" : 8,
             "source_fragment" : "meta.dropPacket = 1"
           }
@@ -354,7 +457,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 183,
+            "line" : 208,
             "column" : 8,
             "source_fragment" : "mark_to_drop(standard_metadata)"
           }
@@ -373,7 +476,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 184,
+            "line" : 209,
             "column" : 8,
             "source_fragment" : "meta.dropPacket = 1"
           }
@@ -404,7 +507,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 189,
+            "line" : 214,
             "column" : 8,
             "source_fragment" : "standard_metadata.egress_spec = port"
           }
@@ -430,7 +533,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 48,
+            "line" : 50,
             "column" : 24,
             "source_fragment" : "255; ..."
           }
@@ -449,7 +552,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 195,
+            "line" : 220,
             "column" : 8,
             "source_fragment" : "meta.sendToCpu = 1"
           }
@@ -468,7 +571,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 196,
+            "line" : 221,
             "column" : 8,
             "source_fragment" : "meta.cpuReason = reason"
           }
@@ -483,7 +586,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 199,
+            "line" : 224,
             "column" : 8,
             "source_fragment" : "hdr.cpu.setValid()"
           }
@@ -502,7 +605,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 200,
+            "line" : 225,
             "column" : 8,
             "source_fragment" : "hdr.cpu.reason = reason"
           }
@@ -544,7 +647,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 201,
+            "line" : 226,
             "column" : 8,
             "source_fragment" : "hdr.cpu.origPort = (bit<8>)standard_metadata.ingress_port"
           }
@@ -563,7 +666,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 202,
+            "line" : 227,
             "column" : 8,
             "source_fragment" : "hdr.cpu.rfRssi = hdr.rfFeatures.rssi"
           }
@@ -589,7 +692,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 48,
+            "line" : 50,
             "column" : 24,
             "source_fragment" : "255; ..."
           }
@@ -608,7 +711,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 195,
+            "line" : 220,
             "column" : 8,
             "source_fragment" : "meta.sendToCpu = 1"
           }
@@ -627,7 +730,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 196,
+            "line" : 221,
             "column" : 8,
             "source_fragment" : "meta.cpuReason = reason"
           }
@@ -642,7 +745,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 199,
+            "line" : 224,
             "column" : 8,
             "source_fragment" : "hdr.cpu.setValid()"
           }
@@ -661,7 +764,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 200,
+            "line" : 225,
             "column" : 8,
             "source_fragment" : "hdr.cpu.reason = reason"
           }
@@ -703,7 +806,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 201,
+            "line" : 226,
             "column" : 8,
             "source_fragment" : "hdr.cpu.origPort = (bit<8>)standard_metadata.ingress_port"
           }
@@ -722,7 +825,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 202,
+            "line" : 227,
             "column" : 8,
             "source_fragment" : "hdr.cpu.rfRssi = hdr.rfFeatures.rssi"
           }
@@ -748,7 +851,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 48,
+            "line" : 50,
             "column" : 24,
             "source_fragment" : "255; ..."
           }
@@ -767,7 +870,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 195,
+            "line" : 220,
             "column" : 8,
             "source_fragment" : "meta.sendToCpu = 1"
           }
@@ -786,7 +889,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 196,
+            "line" : 221,
             "column" : 8,
             "source_fragment" : "meta.cpuReason = reason"
           }
@@ -801,7 +904,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 199,
+            "line" : 224,
             "column" : 8,
             "source_fragment" : "hdr.cpu.setValid()"
           }
@@ -820,7 +923,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 200,
+            "line" : 225,
             "column" : 8,
             "source_fragment" : "hdr.cpu.reason = reason"
           }
@@ -862,7 +965,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 201,
+            "line" : 226,
             "column" : 8,
             "source_fragment" : "hdr.cpu.origPort = (bit<8>)standard_metadata.ingress_port"
           }
@@ -881,7 +984,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 202,
+            "line" : 227,
             "column" : 8,
             "source_fragment" : "hdr.cpu.rfRssi = hdr.rfFeatures.rssi"
           }
@@ -907,7 +1010,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 48,
+            "line" : 50,
             "column" : 24,
             "source_fragment" : "255; ..."
           }
@@ -926,7 +1029,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 195,
+            "line" : 220,
             "column" : 8,
             "source_fragment" : "meta.sendToCpu = 1"
           }
@@ -945,7 +1048,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 196,
+            "line" : 221,
             "column" : 8,
             "source_fragment" : "meta.cpuReason = reason"
           }
@@ -960,7 +1063,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 199,
+            "line" : 224,
             "column" : 8,
             "source_fragment" : "hdr.cpu.setValid()"
           }
@@ -979,7 +1082,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 200,
+            "line" : 225,
             "column" : 8,
             "source_fragment" : "hdr.cpu.reason = reason"
           }
@@ -1021,7 +1124,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 201,
+            "line" : 226,
             "column" : 8,
             "source_fragment" : "hdr.cpu.origPort = (bit<8>)standard_metadata.ingress_port"
           }
@@ -1040,7 +1143,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 202,
+            "line" : 227,
             "column" : 8,
             "source_fragment" : "hdr.cpu.rfRssi = hdr.rfFeatures.rssi"
           }
@@ -1066,7 +1169,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 48,
+            "line" : 50,
             "column" : 24,
             "source_fragment" : "255; ..."
           }
@@ -1085,7 +1188,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 195,
+            "line" : 220,
             "column" : 8,
             "source_fragment" : "meta.sendToCpu = 1"
           }
@@ -1104,7 +1207,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 196,
+            "line" : 221,
             "column" : 8,
             "source_fragment" : "meta.cpuReason = reason"
           }
@@ -1119,7 +1222,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 199,
+            "line" : 224,
             "column" : 8,
             "source_fragment" : "hdr.cpu.setValid()"
           }
@@ -1138,7 +1241,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 200,
+            "line" : 225,
             "column" : 8,
             "source_fragment" : "hdr.cpu.reason = reason"
           }
@@ -1180,7 +1283,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 201,
+            "line" : 226,
             "column" : 8,
             "source_fragment" : "hdr.cpu.origPort = (bit<8>)standard_metadata.ingress_port"
           }
@@ -1199,7 +1302,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 202,
+            "line" : 227,
             "column" : 8,
             "source_fragment" : "hdr.cpu.rfRssi = hdr.rfFeatures.rssi"
           }
@@ -1225,7 +1328,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 48,
+            "line" : 50,
             "column" : 24,
             "source_fragment" : "255; ..."
           }
@@ -1244,7 +1347,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 195,
+            "line" : 220,
             "column" : 8,
             "source_fragment" : "meta.sendToCpu = 1"
           }
@@ -1263,7 +1366,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 196,
+            "line" : 221,
             "column" : 8,
             "source_fragment" : "meta.cpuReason = reason"
           }
@@ -1278,7 +1381,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 199,
+            "line" : 224,
             "column" : 8,
             "source_fragment" : "hdr.cpu.setValid()"
           }
@@ -1297,7 +1400,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 200,
+            "line" : 225,
             "column" : 8,
             "source_fragment" : "hdr.cpu.reason = reason"
           }
@@ -1339,7 +1442,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 201,
+            "line" : 226,
             "column" : 8,
             "source_fragment" : "hdr.cpu.origPort = (bit<8>)standard_metadata.ingress_port"
           }
@@ -1358,7 +1461,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 202,
+            "line" : 227,
             "column" : 8,
             "source_fragment" : "hdr.cpu.rfRssi = hdr.rfFeatures.rssi"
           }
@@ -1384,7 +1487,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 207,
+            "line" : 232,
             "column" : 8,
             "source_fragment" : "standard_metadata.mcast_grp = 1"
           }
@@ -1392,8 +1495,81 @@
       ]
     },
     {
-      "name" : "widd261",
+      "name" : "widd288",
       "id" : 11,
+      "runtime_data" : [],
+      "primitives" : [
+        {
+          "op" : "assign",
+          "parameters" : [
+            {
+              "type" : "field",
+              "value" : ["standard_metadata", "egress_spec"]
+            },
+            {
+              "type" : "expression",
+              "value" : {
+                "type" : "expression",
+                "value" : {
+                  "op" : "&",
+                  "left" : {
+                    "type" : "field",
+                    "value" : ["scalars", "metadata_t.packetOutPort"]
+                  },
+                  "right" : {
+                    "type" : "hexstr",
+                    "value" : "0x01ff"
+                  }
+                }
+              }
+            }
+          ],
+          "source_info" : {
+            "filename" : "widd.p4",
+            "line" : 288,
+            "column" : 12,
+            "source_fragment" : "standard_metadata.egress_spec = (bit<9>)meta.packetOutPort"
+          }
+        },
+        {
+          "op" : "remove_header",
+          "parameters" : [
+            {
+              "type" : "header",
+              "value" : "cpu"
+            }
+          ],
+          "source_info" : {
+            "filename" : "widd.p4",
+            "line" : 291,
+            "column" : 12,
+            "source_fragment" : "hdr.cpu.setInvalid()"
+          }
+        },
+        {
+          "op" : "count",
+          "parameters" : [
+            {
+              "type" : "counter_array",
+              "value" : "WiddIngress.frameCounter"
+            },
+            {
+              "type" : "hexstr",
+              "value" : "0x00000064"
+            }
+          ],
+          "source_info" : {
+            "filename" : "widd.p4",
+            "line" : 294,
+            "column" : 12,
+            "source_fragment" : "frameCounter.count(100)"
+          }
+        }
+      ]
+    },
+    {
+      "name" : "widd308",
+      "id" : 12,
       "runtime_data" : [],
       "primitives" : [
         {
@@ -1420,7 +1596,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 261,
+            "line" : 308,
             "column" : 16,
             "source_fragment" : "return"
           }
@@ -1428,8 +1604,118 @@
       ]
     },
     {
-      "name" : "widd251",
-      "id" : 12,
+      "name" : "widd323",
+      "id" : 13,
+      "runtime_data" : [],
+      "primitives" : [
+        {
+          "op" : "assign",
+          "parameters" : [
+            {
+              "type" : "field",
+              "value" : ["scalars", "metadata_t.isDeauth"]
+            },
+            {
+              "type" : "hexstr",
+              "value" : "0x01"
+            }
+          ],
+          "source_info" : {
+            "filename" : "widd.p4",
+            "line" : 323,
+            "column" : 20,
+            "source_fragment" : "meta.isDeauth = 1"
+          }
+        }
+      ]
+    },
+    {
+      "name" : "widd346",
+      "id" : 14,
+      "runtime_data" : [],
+      "primitives" : [
+        {
+          "op" : "assign",
+          "parameters" : [
+            {
+              "type" : "field",
+              "value" : ["scalars", "metadata_t.sendToCpu"]
+            },
+            {
+              "type" : "hexstr",
+              "value" : "0x00"
+            }
+          ],
+          "source_info" : {
+            "filename" : "widd.p4",
+            "line" : 346,
+            "column" : 20,
+            "source_fragment" : "meta.sendToCpu = 0"
+          }
+        }
+      ]
+    },
+    {
+      "name" : "widd316",
+      "id" : 15,
+      "runtime_data" : [],
+      "primitives" : [
+        {
+          "op" : "assign",
+          "parameters" : [
+            {
+              "type" : "field",
+              "value" : ["scalars", "tmp"]
+            },
+            {
+              "type" : "expression",
+              "value" : {
+                "type" : "expression",
+                "value" : {
+                  "op" : "&",
+                  "left" : {
+                    "type" : "field",
+                    "value" : ["wifiFC", "frameType"]
+                  },
+                  "right" : {
+                    "type" : "hexstr",
+                    "value" : "0xffffffff"
+                  }
+                }
+              }
+            }
+          ],
+          "source_info" : {
+            "filename" : "widd.p4",
+            "line" : 316,
+            "column" : 31,
+            "source_fragment" : "(bit<32>)hdr.wifiFC.frameType"
+          }
+        },
+        {
+          "op" : "count",
+          "parameters" : [
+            {
+              "type" : "counter_array",
+              "value" : "WiddIngress.frameCounter"
+            },
+            {
+              "type" : "field",
+              "value" : ["scalars", "tmp"]
+            }
+          ],
+          "source_info" : {
+            "filename" : "widd.p4",
+            "line" : 316,
+            "column" : 12,
+            "source_fragment" : "frameCounter.count((bit<32>)hdr.wifiFC.frameType)"
+          }
+        }
+      ]
+    },
+    {
+      "name" : "widd276",
+      "id" : 16,
       "runtime_data" : [],
       "primitives" : [
         {
@@ -1469,7 +1755,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 251,
+            "line" : 276,
             "column" : 8,
             "source_fragment" : "meta.sendToCpu = 0"
           }
@@ -1488,7 +1774,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 252,
+            "line" : 277,
             "column" : 8,
             "source_fragment" : "meta.dropPacket = 0"
           }
@@ -1507,7 +1793,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 253,
+            "line" : 278,
             "column" : 8,
             "source_fragment" : "meta.isDeauth = 0"
           }
@@ -1526,7 +1812,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 254,
+            "line" : 279,
             "column" : 8,
             "source_fragment" : "meta.cpuReason = 0"
           }
@@ -1534,118 +1820,8 @@
       ]
     },
     {
-      "name" : "widd276",
-      "id" : 13,
-      "runtime_data" : [],
-      "primitives" : [
-        {
-          "op" : "assign",
-          "parameters" : [
-            {
-              "type" : "field",
-              "value" : ["scalars", "metadata_t.isDeauth"]
-            },
-            {
-              "type" : "hexstr",
-              "value" : "0x01"
-            }
-          ],
-          "source_info" : {
-            "filename" : "widd.p4",
-            "line" : 276,
-            "column" : 20,
-            "source_fragment" : "meta.isDeauth = 1"
-          }
-        }
-      ]
-    },
-    {
-      "name" : "widd299",
-      "id" : 14,
-      "runtime_data" : [],
-      "primitives" : [
-        {
-          "op" : "assign",
-          "parameters" : [
-            {
-              "type" : "field",
-              "value" : ["scalars", "metadata_t.sendToCpu"]
-            },
-            {
-              "type" : "hexstr",
-              "value" : "0x00"
-            }
-          ],
-          "source_info" : {
-            "filename" : "widd.p4",
-            "line" : 299,
-            "column" : 20,
-            "source_fragment" : "meta.sendToCpu = 0"
-          }
-        }
-      ]
-    },
-    {
-      "name" : "widd269",
-      "id" : 15,
-      "runtime_data" : [],
-      "primitives" : [
-        {
-          "op" : "assign",
-          "parameters" : [
-            {
-              "type" : "field",
-              "value" : ["scalars", "tmp"]
-            },
-            {
-              "type" : "expression",
-              "value" : {
-                "type" : "expression",
-                "value" : {
-                  "op" : "&",
-                  "left" : {
-                    "type" : "field",
-                    "value" : ["wifiFC", "frameType"]
-                  },
-                  "right" : {
-                    "type" : "hexstr",
-                    "value" : "0xffffffff"
-                  }
-                }
-              }
-            }
-          ],
-          "source_info" : {
-            "filename" : "widd.p4",
-            "line" : 269,
-            "column" : 31,
-            "source_fragment" : "(bit<32>)hdr.wifiFC.frameType"
-          }
-        },
-        {
-          "op" : "count",
-          "parameters" : [
-            {
-              "type" : "counter_array",
-              "value" : "WiddIngress.frameCounter"
-            },
-            {
-              "type" : "field",
-              "value" : ["scalars", "tmp"]
-            }
-          ],
-          "source_info" : {
-            "filename" : "widd.p4",
-            "line" : 269,
-            "column" : 12,
-            "source_fragment" : "frameCounter.count((bit<32>)hdr.wifiFC.frameType)"
-          }
-        }
-      ]
-    },
-    {
-      "name" : "widd329",
-      "id" : 16,
+      "name" : "widd376",
+      "id" : 17,
       "runtime_data" : [],
       "primitives" : [
         {
@@ -1658,7 +1834,7 @@
           ],
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 329,
+            "line" : 376,
             "column" : 12,
             "source_fragment" : "hdr.cpu.setInvalid()"
           }
@@ -1672,18 +1848,18 @@
       "id" : 0,
       "source_info" : {
         "filename" : "widd.p4",
-        "line" : 170,
+        "line" : 195,
         "column" : 8,
         "source_fragment" : "WiddIngress"
       },
-      "init_table" : "tbl_widd251",
+      "init_table" : "tbl_widd276",
       "tables" : [
         {
-          "name" : "tbl_widd251",
+          "name" : "tbl_widd276",
           "id" : 0,
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 251,
+            "line" : 276,
             "column" : 23,
             "source_fragment" : "= 0; ..."
           },
@@ -1694,14 +1870,43 @@
           "with_counters" : false,
           "support_timeout" : false,
           "direct_meters" : null,
-          "action_ids" : [12],
-          "actions" : ["widd251"],
+          "action_ids" : [16],
+          "actions" : ["widd276"],
           "base_default_next" : "node_3",
           "next_tables" : {
-            "widd251" : "node_3"
+            "widd276" : "node_3"
           },
           "default_entry" : {
-            "action_id" : 12,
+            "action_id" : 16,
+            "action_const" : true,
+            "action_data" : [],
+            "action_entry_const" : true
+          }
+        },
+        {
+          "name" : "tbl_widd288",
+          "id" : 1,
+          "source_info" : {
+            "filename" : "widd.p4",
+            "line" : 288,
+            "column" : 42,
+            "source_fragment" : "= (bit<9>)meta.packetOutPort; ..."
+          },
+          "key" : [],
+          "match_type" : "exact",
+          "type" : "simple",
+          "max_size" : 1024,
+          "with_counters" : false,
+          "support_timeout" : false,
+          "direct_meters" : null,
+          "action_ids" : [11],
+          "actions" : ["widd288"],
+          "base_default_next" : null,
+          "next_tables" : {
+            "widd288" : null
+          },
+          "default_entry" : {
+            "action_id" : 11,
             "action_const" : true,
             "action_data" : [],
             "action_entry_const" : true
@@ -1709,10 +1914,10 @@
         },
         {
           "name" : "WiddIngress.blocklist",
-          "id" : 1,
+          "id" : 2,
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 237,
+            "line" : 262,
             "column" : 10,
             "source_fragment" : "blocklist"
           },
@@ -1732,10 +1937,10 @@
           "direct_meters" : null,
           "action_ids" : [2, 0],
           "actions" : ["WiddIngress.drop", "NoAction"],
-          "base_default_next" : "node_5",
+          "base_default_next" : "node_7",
           "next_tables" : {
-            "WiddIngress.drop" : "node_5",
-            "NoAction" : "node_5"
+            "WiddIngress.drop" : "node_7",
+            "NoAction" : "node_7"
           },
           "default_entry" : {
             "action_id" : 0,
@@ -1745,11 +1950,11 @@
           }
         },
         {
-          "name" : "tbl_widd261",
-          "id" : 2,
+          "name" : "tbl_widd308",
+          "id" : 3,
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 261,
+            "line" : 308,
             "column" : 16,
             "source_fragment" : "return"
           },
@@ -1760,25 +1965,25 @@
           "with_counters" : false,
           "support_timeout" : false,
           "direct_meters" : null,
-          "action_ids" : [11],
-          "actions" : ["widd261"],
-          "base_default_next" : "node_7",
+          "action_ids" : [12],
+          "actions" : ["widd308"],
+          "base_default_next" : "node_9",
           "next_tables" : {
-            "widd261" : "node_7"
+            "widd308" : "node_9"
           },
           "default_entry" : {
-            "action_id" : 11,
+            "action_id" : 12,
             "action_const" : true,
             "action_data" : [],
             "action_entry_const" : true
           }
         },
         {
-          "name" : "tbl_widd269",
-          "id" : 3,
+          "name" : "tbl_widd316",
+          "id" : 4,
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 269,
+            "line" : 316,
             "column" : 12,
             "source_fragment" : "frameCounter.count((bit<32>)hdr.wifiFC.frameType)"
           },
@@ -1790,10 +1995,10 @@
           "support_timeout" : false,
           "direct_meters" : null,
           "action_ids" : [15],
-          "actions" : ["widd269"],
-          "base_default_next" : "node_10",
+          "actions" : ["widd316"],
+          "base_default_next" : "node_12",
           "next_tables" : {
-            "widd269" : "node_10"
+            "widd316" : "node_12"
           },
           "default_entry" : {
             "action_id" : 15,
@@ -1803,11 +2008,11 @@
           }
         },
         {
-          "name" : "tbl_widd276",
-          "id" : 4,
+          "name" : "tbl_widd323",
+          "id" : 5,
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 276,
+            "line" : 323,
             "column" : 34,
             "source_fragment" : "="
           },
@@ -1819,10 +2024,10 @@
           "support_timeout" : false,
           "direct_meters" : null,
           "action_ids" : [13],
-          "actions" : ["widd276"],
+          "actions" : ["widd323"],
           "base_default_next" : "tbl_send_to_cpu",
           "next_tables" : {
-            "widd276" : "tbl_send_to_cpu"
+            "widd323" : "tbl_send_to_cpu"
           },
           "default_entry" : {
             "action_id" : 13,
@@ -1833,10 +2038,10 @@
         },
         {
           "name" : "tbl_send_to_cpu",
-          "id" : 5,
+          "id" : 6,
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 278,
+            "line" : 325,
             "column" : 20,
             "source_fragment" : "send_to_cpu(1)"
           },
@@ -1849,9 +2054,9 @@
           "direct_meters" : null,
           "action_ids" : [4],
           "actions" : ["WiddIngress.send_to_cpu"],
-          "base_default_next" : "node_25",
+          "base_default_next" : "node_27",
           "next_tables" : {
-            "WiddIngress.send_to_cpu" : "node_25"
+            "WiddIngress.send_to_cpu" : "node_27"
           },
           "default_entry" : {
             "action_id" : 4,
@@ -1862,10 +2067,10 @@
         },
         {
           "name" : "tbl_send_to_cpu_0",
-          "id" : 6,
+          "id" : 7,
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 282,
+            "line" : 329,
             "column" : 20,
             "source_fragment" : "send_to_cpu(3)"
           },
@@ -1878,9 +2083,9 @@
           "direct_meters" : null,
           "action_ids" : [5],
           "actions" : ["WiddIngress.send_to_cpu"],
-          "base_default_next" : "node_25",
+          "base_default_next" : "node_27",
           "next_tables" : {
-            "WiddIngress.send_to_cpu" : "node_25"
+            "WiddIngress.send_to_cpu" : "node_27"
           },
           "default_entry" : {
             "action_id" : 5,
@@ -1891,10 +2096,10 @@
         },
         {
           "name" : "tbl_send_to_cpu_1",
-          "id" : 7,
+          "id" : 8,
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 287,
+            "line" : 334,
             "column" : 20,
             "source_fragment" : "send_to_cpu(2)"
           },
@@ -1907,9 +2112,9 @@
           "direct_meters" : null,
           "action_ids" : [6],
           "actions" : ["WiddIngress.send_to_cpu"],
-          "base_default_next" : "node_25",
+          "base_default_next" : "node_27",
           "next_tables" : {
-            "WiddIngress.send_to_cpu" : "node_25"
+            "WiddIngress.send_to_cpu" : "node_27"
           },
           "default_entry" : {
             "action_id" : 6,
@@ -1920,10 +2125,10 @@
         },
         {
           "name" : "tbl_send_to_cpu_2",
-          "id" : 8,
+          "id" : 9,
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 291,
+            "line" : 338,
             "column" : 20,
             "source_fragment" : "send_to_cpu(5)"
           },
@@ -1936,9 +2141,9 @@
           "direct_meters" : null,
           "action_ids" : [7],
           "actions" : ["WiddIngress.send_to_cpu"],
-          "base_default_next" : "node_25",
+          "base_default_next" : "node_27",
           "next_tables" : {
-            "WiddIngress.send_to_cpu" : "node_25"
+            "WiddIngress.send_to_cpu" : "node_27"
           },
           "default_entry" : {
             "action_id" : 7,
@@ -1949,10 +2154,10 @@
         },
         {
           "name" : "tbl_send_to_cpu_3",
-          "id" : 9,
+          "id" : 10,
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 295,
+            "line" : 342,
             "column" : 20,
             "source_fragment" : "send_to_cpu(4)"
           },
@@ -1965,9 +2170,9 @@
           "direct_meters" : null,
           "action_ids" : [8],
           "actions" : ["WiddIngress.send_to_cpu"],
-          "base_default_next" : "node_25",
+          "base_default_next" : "node_27",
           "next_tables" : {
-            "WiddIngress.send_to_cpu" : "node_25"
+            "WiddIngress.send_to_cpu" : "node_27"
           },
           "default_entry" : {
             "action_id" : 8,
@@ -1977,11 +2182,11 @@
           }
         },
         {
-          "name" : "tbl_widd299",
-          "id" : 10,
+          "name" : "tbl_widd346",
+          "id" : 11,
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 299,
+            "line" : 346,
             "column" : 35,
             "source_fragment" : "="
           },
@@ -1993,10 +2198,10 @@
           "support_timeout" : false,
           "direct_meters" : null,
           "action_ids" : [14],
-          "actions" : ["widd299"],
-          "base_default_next" : "node_25",
+          "actions" : ["widd346"],
+          "base_default_next" : "node_27",
           "next_tables" : {
-            "widd299" : "node_25"
+            "widd346" : "node_27"
           },
           "default_entry" : {
             "action_id" : 14,
@@ -2007,10 +2212,10 @@
         },
         {
           "name" : "tbl_send_to_cpu_4",
-          "id" : 11,
+          "id" : 12,
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 305,
+            "line" : 352,
             "column" : 16,
             "source_fragment" : "send_to_cpu(6)"
           },
@@ -2023,9 +2228,9 @@
           "direct_meters" : null,
           "action_ids" : [9],
           "actions" : ["WiddIngress.send_to_cpu"],
-          "base_default_next" : "node_25",
+          "base_default_next" : "node_27",
           "next_tables" : {
-            "WiddIngress.send_to_cpu" : "node_25"
+            "WiddIngress.send_to_cpu" : "node_27"
           },
           "default_entry" : {
             "action_id" : 9,
@@ -2036,10 +2241,10 @@
         },
         {
           "name" : "WiddIngress.l2_forward",
-          "id" : 12,
+          "id" : 13,
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 211,
+            "line" : 236,
             "column" : 10,
             "source_fragment" : "l2_forward"
           },
@@ -2080,7 +2285,33 @@
           "id" : 0,
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 257,
+            "line" : 284,
+            "column" : 12,
+            "source_fragment" : "meta.isPacketOut == 1"
+          },
+          "expression" : {
+            "type" : "expression",
+            "value" : {
+              "op" : "==",
+              "left" : {
+                "type" : "field",
+                "value" : ["scalars", "metadata_t.isPacketOut"]
+              },
+              "right" : {
+                "type" : "hexstr",
+                "value" : "0x01"
+              }
+            }
+          },
+          "true_next" : "tbl_widd288",
+          "false_next" : "node_5"
+        },
+        {
+          "name" : "node_5",
+          "id" : 1,
+          "source_info" : {
+            "filename" : "widd.p4",
+            "line" : 304,
             "column" : 12,
             "source_fragment" : "hdr.wifiAddr.isValid()"
           },
@@ -2096,14 +2327,14 @@
             }
           },
           "true_next" : "WiddIngress.blocklist",
-          "false_next" : "node_7"
+          "false_next" : "node_9"
         },
         {
-          "name" : "node_5",
-          "id" : 1,
+          "name" : "node_7",
+          "id" : 2,
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 259,
+            "line" : 306,
             "column" : 16,
             "source_fragment" : "meta.dropPacket == 1"
           },
@@ -2121,12 +2352,12 @@
               }
             }
           },
-          "true_next" : "tbl_widd261",
-          "false_next" : "node_7"
+          "true_next" : "tbl_widd308",
+          "false_next" : "node_9"
         },
         {
-          "name" : "node_7",
-          "id" : 2,
+          "name" : "node_9",
+          "id" : 3,
           "expression" : {
             "type" : "expression",
             "value" : {
@@ -2139,14 +2370,14 @@
             }
           },
           "true_next" : null,
-          "false_next" : "node_8"
+          "false_next" : "node_10"
         },
         {
-          "name" : "node_8",
-          "id" : 3,
+          "name" : "node_10",
+          "id" : 4,
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 266,
+            "line" : 313,
             "column" : 12,
             "source_fragment" : "hdr.wifiFC.isValid()"
           },
@@ -2161,15 +2392,15 @@
               }
             }
           },
-          "true_next" : "tbl_widd269",
-          "false_next" : "node_25"
+          "true_next" : "tbl_widd316",
+          "false_next" : "node_27"
         },
         {
-          "name" : "node_10",
-          "id" : 4,
+          "name" : "node_12",
+          "id" : 5,
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 272,
+            "line" : 319,
             "column" : 16,
             "source_fragment" : "hdr.wifiFC.frameType == FRAME_TYPE_MANAGEMENT"
           },
@@ -2187,15 +2418,15 @@
               }
             }
           },
-          "true_next" : "node_11",
-          "false_next" : "node_23"
+          "true_next" : "node_13",
+          "false_next" : "node_25"
         },
         {
-          "name" : "node_11",
-          "id" : 5,
+          "name" : "node_13",
+          "id" : 6,
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 275,
+            "line" : 322,
             "column" : 20,
             "source_fragment" : "hdr.wifiFC.subType == SUBTYPE_DEAUTH"
           },
@@ -2213,15 +2444,15 @@
               }
             }
           },
-          "true_next" : "tbl_widd276",
-          "false_next" : "node_14"
+          "true_next" : "tbl_widd323",
+          "false_next" : "node_16"
         },
         {
-          "name" : "node_14",
-          "id" : 6,
+          "name" : "node_16",
+          "id" : 7,
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 281,
+            "line" : 328,
             "column" : 25,
             "source_fragment" : "hdr.wifiFC.subType == SUBTYPE_AUTH"
           },
@@ -2240,14 +2471,14 @@
             }
           },
           "true_next" : "tbl_send_to_cpu_0",
-          "false_next" : "node_16"
+          "false_next" : "node_18"
         },
         {
-          "name" : "node_16",
-          "id" : 7,
+          "name" : "node_18",
+          "id" : 8,
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 285,
+            "line" : 332,
             "column" : 25,
             "source_fragment" : "hdr.wifiFC.subType == SUBTYPE_ASSOC_REQ || ..."
           },
@@ -2286,14 +2517,14 @@
             }
           },
           "true_next" : "tbl_send_to_cpu_1",
-          "false_next" : "node_18"
+          "false_next" : "node_20"
         },
         {
-          "name" : "node_18",
-          "id" : 8,
+          "name" : "node_20",
+          "id" : 9,
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 290,
+            "line" : 337,
             "column" : 25,
             "source_fragment" : "hdr.wifiFC.subType == SUBTYPE_DISASSOC"
           },
@@ -2312,14 +2543,14 @@
             }
           },
           "true_next" : "tbl_send_to_cpu_2",
-          "false_next" : "node_20"
+          "false_next" : "node_22"
         },
         {
-          "name" : "node_20",
-          "id" : 9,
+          "name" : "node_22",
+          "id" : 10,
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 294,
+            "line" : 341,
             "column" : 25,
             "source_fragment" : "hdr.wifiFC.subType == SUBTYPE_BEACON"
           },
@@ -2338,14 +2569,14 @@
             }
           },
           "true_next" : "tbl_send_to_cpu_3",
-          "false_next" : "tbl_widd299"
+          "false_next" : "tbl_widd346"
         },
         {
-          "name" : "node_23",
-          "id" : 10,
+          "name" : "node_25",
+          "id" : 11,
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 302,
+            "line" : 349,
             "column" : 21,
             "source_fragment" : "hdr.wifiFC.frameType == FRAME_TYPE_DATA"
           },
@@ -2364,14 +2595,14 @@
             }
           },
           "true_next" : "tbl_send_to_cpu_4",
-          "false_next" : "node_25"
+          "false_next" : "node_27"
         },
         {
-          "name" : "node_25",
-          "id" : 11,
+          "name" : "node_27",
+          "id" : 12,
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 311,
+            "line" : 358,
             "column" : 12,
             "source_fragment" : "meta.sendToCpu == 0 && meta.dropPacket == 0"
           },
@@ -2419,18 +2650,18 @@
       "id" : 1,
       "source_info" : {
         "filename" : "widd.p4",
-        "line" : 321,
+        "line" : 368,
         "column" : 8,
         "source_fragment" : "WiddEgress"
       },
-      "init_table" : "node_29",
+      "init_table" : "node_31",
       "tables" : [
         {
-          "name" : "tbl_widd329",
-          "id" : 13,
+          "name" : "tbl_widd376",
+          "id" : 14,
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 329,
+            "line" : 376,
             "column" : 12,
             "source_fragment" : "hdr.cpu.setInvalid()"
           },
@@ -2441,14 +2672,14 @@
           "with_counters" : false,
           "support_timeout" : false,
           "direct_meters" : null,
-          "action_ids" : [16],
-          "actions" : ["widd329"],
+          "action_ids" : [17],
+          "actions" : ["widd376"],
           "base_default_next" : null,
           "next_tables" : {
-            "widd329" : null
+            "widd376" : null
           },
           "default_entry" : {
-            "action_id" : 16,
+            "action_id" : 17,
             "action_const" : true,
             "action_data" : [],
             "action_entry_const" : true
@@ -2458,11 +2689,11 @@
       "action_profiles" : [],
       "conditionals" : [
         {
-          "name" : "node_29",
-          "id" : 12,
+          "name" : "node_31",
+          "id" : 13,
           "source_info" : {
             "filename" : "widd.p4",
-            "line" : 328,
+            "line" : 375,
             "column" : 12,
             "source_fragment" : "standard_metadata.egress_port != CPU_PORT && hdr.cpu.isValid()"
           },
@@ -2498,7 +2729,7 @@
             }
           },
           "false_next" : null,
-          "true_next" : "tbl_widd329"
+          "true_next" : "tbl_widd376"
         }
       ]
     }

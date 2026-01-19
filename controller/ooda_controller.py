@@ -68,6 +68,9 @@ class ParsedFrame:
     cpu_reason: int
     orig_port: int
 
+    # Full raw packet bytes (for extracting raw 802.11 frame in Packet-Out)
+    raw_bytes: bytes = b''
+
 
 class OODAController:
     """
@@ -211,7 +214,8 @@ class OODAController:
                 pilot_offset=pilot,
                 mag_squared=mag,
                 cpu_reason=event.reason,
-                orig_port=event.orig_port
+                orig_port=event.orig_port,
+                raw_bytes=event.raw_packet  # Full raw packet including CPU header
             )
 
         except Exception as e:
@@ -302,8 +306,11 @@ class OODAController:
         if should_drop:
             self.stats['deauth_dropped'] += 1
             logger.ooda_decide_drop("Spoofed deauth (MOCC failed)", source_mac)
+            # Frame is dropped - do NOT forward via Packet-Out
         else:
             logger.ooda_decide_pass(source_mac)
+            # Frame is legitimate - forward to victim via Packet-Out
+            self._forward_frame(frame)
 
         if attack != AttackType.NONE:
             self.stats['attacks_detected'] += 1
@@ -346,8 +353,11 @@ class OODAController:
 
         if should_drop:
             logger.ooda_decide_drop("Spoofed disassoc (MOCC failed)", source_mac)
+            # Frame is dropped - do NOT forward
         else:
             logger.ooda_decide_pass(source_mac)
+            # Frame is legitimate - forward to victim
+            self._forward_frame(frame)
 
         if attack != AttackType.NONE:
             self.stats['attacks_detected'] += 1
@@ -411,6 +421,65 @@ class OODAController:
         status = self.mocc.get_training_status(source_mac)
         if status['samples'] % 50 == 0:  # Log every 50 samples
             logger.ooda_orient_training(source_mac, status['samples'], status['trained'])
+
+    def _forward_frame(self, frame: ParsedFrame) -> bool:
+        """
+        Forward a legitimate frame to its destination via Packet-Out through P4 switch.
+
+        This is called when MOCC verifies the frame is from a legitimate source.
+        Extracts the raw 802.11 frame (without Ethernet/RF encapsulation) and
+        sends it back through the P4 switch to the destination port.
+
+        Flow: Controller -> P4 Switch (CPU port) -> Destination Port -> AP -> Victim
+
+        Args:
+            frame: The parsed frame to forward (contains raw_bytes)
+
+        Returns:
+            True if successfully forwarded
+        """
+        if not frame.raw_bytes:
+            logger.system_info("[ACT] Cannot forward frame: no raw_bytes data")
+            return False
+
+        # Extract raw 802.11 frame from encapsulated packet
+        # Original format: [CPU(4)][Ethernet(14)][WiFi FC(2)][WiFi Addr(20)][RF(8)][Payload]
+        # We want: [WiFi FC(2)][WiFi Addr(20)][Payload] - pure 802.11 frame
+        CPU_HDR_SIZE = 4
+        ETH_HDR_SIZE = 14
+        WIFI_FC_SIZE = 2
+        WIFI_ADDR_SIZE = 20
+        RF_SIZE = 8
+
+        wifi_fc_start = CPU_HDR_SIZE + ETH_HDR_SIZE
+        wifi_addr_end = wifi_fc_start + WIFI_FC_SIZE + WIFI_ADDR_SIZE
+        rf_end = wifi_addr_end + RF_SIZE
+
+        # Raw 802.11 frame: WiFi FC + WiFi Addr + Payload (skip RF features)
+        raw_80211_frame = frame.raw_bytes[wifi_fc_start:wifi_addr_end] + frame.raw_bytes[rf_end:]
+
+        logger.system_info(f"[ACT] Extracted raw 802.11 frame: {len(raw_80211_frame)} bytes")
+        logger.system_info(f"[ACT] Frame hex: {raw_80211_frame[:20].hex()}...")
+
+        # Determine destination port from the original ingress port
+        # The frame came in on orig_port, we need to send it back out the same way
+        # to reach the victim (the AP interface)
+        dest_port = frame.orig_port
+
+        logger.system_info(f"[ACT] Forwarding raw 802.11 via P4 Packet-Out to port {dest_port}")
+
+        # Send via P4 switch Packet-Out
+        # The P4 parser accepts: [CPU Header][Raw 802.11 payload]
+        # send_packet_out() prepends the CPU header automatically
+        success = self.switch.send_packet_out(dest_port, raw_80211_frame)
+
+        if success:
+            self.stats['frames_forwarded'] = self.stats.get('frames_forwarded', 0) + 1
+            logger.system_info(f"[ACT] Sent raw 802.11 frame via Packet-Out to port {dest_port} ({len(raw_80211_frame)} bytes)")
+        else:
+            logger.system_info(f"[ACT] Failed to send Packet-Out")
+
+        return success
 
     def _block_attacker(self, attacker_mac: str) -> bool:
         """

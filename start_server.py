@@ -61,8 +61,11 @@ Examples:
     logger.print_banner()
     logger.system_start("OODA Controller Server")
 
-    # Initialize controller
-    controller = OODAController()
+    # CPU port interface for P4 Packet-In/Out
+    cpu_interface = 's1-cpu-h'
+
+    # Initialize controller with CPU interface for Packet-Out
+    controller = OODAController(cpu_iface=cpu_interface)
 
     # Configure network
     controller.set_network_info(args.ssid, args.bssid)
@@ -125,7 +128,8 @@ Examples:
                 pilot_offset=frame_info.get('pilot', 0),
                 mag_squared=frame_info.get('mag', 0),
                 cpu_reason=frame_info.get('cpu_reason', 0),
-                orig_port=frame_info.get('cpu_orig_port', 0)
+                orig_port=frame_info.get('cpu_orig_port', 0),
+                raw_bytes=frame_info.get('raw_bytes', b'')  # Full raw packet for Packet-Out
             )
 
             # Create RFFeatures for MOCC
@@ -164,26 +168,25 @@ Examples:
     # NOTE: We listen on the CPU port veth interface created by bmv2
     # This receives Packet-In messages from the P4 switch
     import subprocess
-    interface = 's1-cpu-h'  # CPU port interface for P4 Packet-In
-    logger.system_info(f"Checking for P4 CPU port interface {interface}...")
+    logger.system_info(f"Checking for P4 CPU port interface {cpu_interface}...")
 
     max_retries = 30
     for i in range(max_retries):
         try:
-            result = subprocess.run(['ip', 'link', 'show', interface],
+            result = subprocess.run(['ip', 'link', 'show', cpu_interface],
                                   capture_output=True, text=True, timeout=2)
             if result.returncode == 0:
-                logger.system_info(f"Interface {interface} found!")
+                logger.system_info(f"Interface {cpu_interface} found!")
                 break
         except Exception:
             pass
 
         if i == 0:
-            logger.system_info(f"Waiting for {interface} to be available...")
+            logger.system_info(f"Waiting for {cpu_interface} to be available...")
 
         time.sleep(1)
     else:
-        logger.system_info(f"WARNING: Interface {interface} not found after {max_retries} seconds")
+        logger.system_info(f"WARNING: Interface {cpu_interface} not found after {max_retries} seconds")
         logger.system_info("Available interfaces:")
         try:
             result = subprocess.run(['ip', 'link', 'show'], capture_output=True, text=True)
@@ -196,15 +199,15 @@ Examples:
         logger.system_info("\nTrying to continue anyway...")
 
     # Create and start packet receiver
-    logger.system_info(f"Starting packet receiver on {interface}...")
-    receiver = PacketReceiver(interface=interface, callback=handle_packet)
+    logger.system_info(f"Starting packet receiver on {cpu_interface}...")
+    receiver = PacketReceiver(interface=cpu_interface, callback=handle_packet)
     receiver.start()
 
     # Ready to receive packets from P4 switch
     print("\n" + "="*70)
     print("  OODA CONTROLLER READY")
     print("="*70)
-    print(f"  Listening for P4 Packet-In on CPU port: {interface}")
+    print(f"  Listening for P4 Packet-In on CPU port: {cpu_interface}")
     print("  P4 switch filters management frames and sends via Packet-In")
     print("  Send attacks via mininet-wifi using interactive_attack.py")
     print("  Press Ctrl+C to stop")

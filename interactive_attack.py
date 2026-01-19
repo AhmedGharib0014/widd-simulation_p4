@@ -187,7 +187,7 @@ class InteractiveAttackCLI:
             victim_mac=victim,
             count=count,
             interval=0.1,
-            spoof=True
+            spoof=False
         )
 
         self.show_sent(sent, "deauth")

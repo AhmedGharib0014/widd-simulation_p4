@@ -398,29 +398,53 @@ class SwitchInterface:
         except Exception as e:
             print(f"Failed to start Packet-In listener: {e}")
 
-    def send_packet_out(self, port: int, packet: bytes) -> bool:
+    def send_packet_out(self, port: int, packet: bytes, iface: str = None) -> bool:
         """
-        Send a packet out through the switch.
+        Send a packet out through the switch via CPU port.
+
+        The packet will be sent to the CPU port interface and the P4 switch
+        will forward it to the specified destination port.
 
         Args:
-            port: Output port number
-            packet: Raw packet bytes (including CPU header if needed)
+            port: Output port number (where to forward the packet)
+            packet: Raw packet bytes (Ethernet frame without CPU header)
+            iface: CPU interface to send on (defaults to self.cpu_iface)
 
         Returns:
             True if successful
         """
-        if not self.cpu_socket:
-            print("CPU socket not initialized")
+        iface = iface or self.cpu_iface
+        if not iface:
+            print("[SwitchInterface] No CPU interface specified for Packet-Out")
             return False
 
         try:
-            # Add CPU header for packet-out
+            # Build CPU header for Packet-Out
+            # reason=0 means PASS (forward this frame)
+            # origPort contains the destination port
+            # rfRssi is unused for Packet-Out
             cpu_header = struct.pack(CPU_HEADER_FORMAT, 0, port, 0)
+
+            # Full packet: CPU header + packet payload
             full_packet = cpu_header + packet
-            self.cpu_socket.send(full_packet)
+
+            # Create a raw socket to send on the CPU interface
+            send_socket = socket.socket(
+                socket.AF_PACKET,
+                socket.SOCK_RAW,
+                socket.htons(0x0003)  # ETH_P_ALL
+            )
+            send_socket.bind((iface, 0))
+            send_socket.send(full_packet)
+            send_socket.close()
+
+            print(f"[SwitchInterface] Sent Packet-Out ({len(full_packet)} bytes) to port {port} via {iface}")
             return True
+
         except Exception as e:
-            print(f"Failed to send packet-out: {e}")
+            print(f"[SwitchInterface] Failed to send Packet-Out: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
 

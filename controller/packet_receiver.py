@@ -191,7 +191,8 @@ class PacketReceiver:
                 'mag': mag,
                 'cpu_reason': cpu_reason,
                 'cpu_orig_port': cpu_orig_port,
-                'raw_payload': raw_bytes[offset:] if len(raw_bytes) > offset else b''
+                'raw_payload': raw_bytes[offset:] if len(raw_bytes) > offset else b'',
+                'raw_bytes': raw_bytes  # Full raw packet for controller to extract what it needs
             }
 
             print(f"[PacketReceiver] Parsed WIDD frame: {frame_info['frame_type']}/{frame_info['subtype']} from {frame_info['src_mac']}")

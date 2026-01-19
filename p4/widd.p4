@@ -6,9 +6,11 @@
  * - Identify frame type: Data, Control, Management
  * - Detect Deauthentication frames (subtype 0xC)
  * - Send suspicious frames to CPU (control plane)
+ * - Handle Packet-Out from controller (forward legitimate frames)
  *
  * Frame Structure (simplified for simulation):
- * [Ethernet Header][802.11 Frame Control][802.11 Addresses][Payload]
+ * Packet-In (to CPU):   [CPU Header][Ethernet][WiFi FC][WiFi Addr][RF Features][Payload]
+ * Packet-Out (from CPU): [CPU Header][Ethernet][WiFi FC][WiFi Addr][Payload] (no RF features)
  *
  * 802.11 Frame Control (2 bytes):
  * - Protocol Version: 2 bits
@@ -93,10 +95,12 @@ header rf_features_t {
 }
 
 // CPU header for Packet-In/Out metadata
+// Packet-In:  reason = frame type, origPort = ingress port, rfRssi = RSSI
+// Packet-Out: reason = 0 (PASS) or 0xFF (special), origPort = egress port, rfRssi = unused
 header cpu_header_t {
-    bit<8>  reason;      // Why sent to CPU (1=deauth, 2=assoc, 3=auth, 4=beacon)
-    bit<8>  origPort;    // Original ingress port
-    bit<16> rfRssi;      // Copy of RSSI for MOCC
+    bit<8>  reason;      // Packet-In: frame type (1=deauth, etc). Packet-Out: 0=PASS
+    bit<8>  origPort;    // Packet-In: ingress port. Packet-Out: destination port
+    bit<16> rfRssi;      // Packet-In: RSSI. Packet-Out: unused
 }
 
 // Header struct
@@ -115,6 +119,8 @@ struct metadata_t {
     bit<1>  dropPacket;
     bit<1>  isDeauth;
     bit<1>  isKnownDevice;
+    bit<1>  isPacketOut;    // Flag: packet coming from CPU (Packet-Out)
+    bit<8>  packetOutPort;  // Destination port for Packet-Out
 }
 
 /*************************************************************************
@@ -128,7 +134,21 @@ parser WiddParser(
     inout standard_metadata_t standard_metadata
 ) {
     state start {
-        transition parse_ethernet;
+        // Check if packet is coming from CPU port (Packet-Out)
+        transition select(standard_metadata.ingress_port) {
+            CPU_PORT: parse_cpu_header;
+            default: parse_ethernet;
+        }
+    }
+
+    // Parse CPU header for Packet-Out (from controller)
+    // For Packet-Out, the payload is raw 802.11 frame (no Ethernet/WIDD encapsulation)
+    state parse_cpu_header {
+        packet.extract(hdr.cpu);
+        meta.isPacketOut = 1;
+        meta.packetOutPort = hdr.cpu.origPort;  // origPort contains destination
+        // Don't parse further - just forward the raw payload as-is
+        transition accept;
     }
 
     state parse_ethernet {
@@ -146,7 +166,12 @@ parser WiddParser(
 
     state parse_wifi_addr {
         packet.extract(hdr.wifiAddr);
-        transition parse_rf_features;
+        // For Packet-Out, no RF features (controller stripped them)
+        // For regular packets, parse RF features
+        transition select(meta.isPacketOut) {
+            1: accept;  // Packet-Out: no RF features
+            default: parse_rf_features;
+        }
     }
 
     state parse_rf_features {
@@ -253,6 +278,28 @@ control WiddIngress(
         meta.isDeauth = 0;
         meta.cpuReason = 0;
 
+        // ============================================================
+        // PACKET-OUT HANDLING: Packets from CPU (controller decision)
+        // ============================================================
+        if (meta.isPacketOut == 1) {
+            // This is a Packet-Out from controller
+            // Forward to the port specified in CPU header
+            // The CPU header and RF features have already been stripped by controller
+            standard_metadata.egress_spec = (bit<9>)meta.packetOutPort;
+
+            // Invalidate CPU header so it's not emitted
+            hdr.cpu.setInvalid();
+
+            // Count forwarded frames
+            frameCounter.count(100);  // Use index 100 for packet-out stats
+
+            return;
+        }
+
+        // ============================================================
+        // NORMAL PACKET-IN PROCESSING: Packets from network
+        // ============================================================
+
         // Check blocklist first - drop packets from known attackers
         if (hdr.wifiAddr.isValid()) {
             blocklist.apply();
@@ -345,10 +392,15 @@ control WiddComputeChecksum(inout headers_t hdr, inout metadata_t meta) {
 
 control WiddDeparser(packet_out packet, in headers_t hdr) {
     apply {
+        // CPU header: only emit if valid (Packet-In to CPU)
         packet.emit(hdr.cpu);
+        // Ethernet header: always emit
         packet.emit(hdr.ethernet);
+        // WiFi headers: always emit
         packet.emit(hdr.wifiFC);
         packet.emit(hdr.wifiAddr);
+        // RF features: only emit if valid (Packet-In, not Packet-Out)
+        // For Packet-Out, RF features were stripped by controller
         packet.emit(hdr.rfFeatures);
     }
 }
