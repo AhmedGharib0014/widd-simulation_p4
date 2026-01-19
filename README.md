@@ -6,20 +6,20 @@ An SDN-based security system for wireless networks implementing **OODA loops** a
 
 ```
 +-----------------------------------------------------------+
-|             CONTROL PLANE (Python/POX Logic)              |
+|             CONTROL PLANE (Python)                        |
 |                                                           |
 |  +---------------------+        +-----------------------+ |
 |  |   MOCC Algorithm    |        |  Kill Chain State     | |
 |  | (RF Identification) |<------>|  Machine (KCSM)       | |
 |  +----------^----------+        +-----------^-----------+ |
 +-------------|-------------------------------|-------------+
-              | OpenFlow / Thrift             |
+              | Packet-In/Out (CPU port)      |
 +-------------|-------------------------------|-------------+
 |  DATA PLANE (bmv2 Switch - P4 Program)     |             |
 |                                             |             |
 |  +----------v----------+        +-----------v-----------+ |
 |  |  Observe/Orientate  |        |     Decision/Act      | |
-|  | (Header Extraction) |        | (Drop/Pass/Inject)    | |
+|  | (Header Extraction) |        | (Drop/Pass/Forward)   | |
 |  +----------^----------+        +-----------|-----------+ |
 +-------------|-------------------------------|-------------+
               |                               |
@@ -44,17 +44,23 @@ widd/
 │   ├── mocc.py               # MOCC algorithm (RF fingerprinting)
 │   ├── kcsm.py               # Kill Chain State Machine
 │   ├── ooda_controller.py    # Main OODA loop controller
-│   └── switch_interface.py   # bmv2 Thrift interface
+│   ├── switch_interface.py   # bmv2 Thrift + Packet-In/Out handling
+│   └── logger.py             # Color-coded logging system
 ├── attacks/
 │   ├── __init__.py
-│   └── attack_generator.py   # Simulated attack traffic
+│   └── attack_generator.py   # Scapy-based attack traffic generation
 ├── topology/
 │   └── widd_topo.py          # Mininet-WiFi network topology
 ├── p4/
 │   ├── widd.p4               # P4 program for bmv2 switch
 │   ├── widd.json             # Compiled P4 program
 │   └── Makefile              # P4 compilation rules
+├── docs/
+│   ├── README.md             # Architecture documentation
+│   ├── component_diagram.puml
+│   └── architecture_uml.puml
 ├── demo_launcher.sh          # Multi-terminal demo script
+├── start_server.py           # OODA Controller server entry point
 └── interactive_attack.py     # Interactive attack CLI
 ```
 
@@ -83,59 +89,72 @@ Main control loop implementing Observe-Orient-Decide-Act:
 1. **Observe**: Receive Packet-In from bmv2 (management frames)
 2. **Orient**: Parse frame, extract RF features, call MOCC
 3. **Decide**: Update KCSM, determine attack state
-4. **Act**: Drop/Pass/Inject countermeasures
+4. **Act**: Drop spoofed frames OR forward legitimate via Packet-Out
+
+#### Switch Interface (`controller/switch_interface.py`)
+Unified interface for P4 switch communication:
+- Thrift API connection to bmv2 (table management, counters)
+- Packet-In listener (Scapy-based sniffing on CPU port)
+- Packet-Out sender (raw socket injection to CPU port)
+- WIDD frame parsing (CPU header, Ethernet, WiFi FC, WiFi Addr, RF Features)
 
 ### Data Plane
 
 #### P4 Program (`p4/widd.p4`)
 bmv2 switch program for 802.11 frame processing:
-- Extracts frame type, subtype, addresses
-- Simulates RF feature extraction (RSSI, phase)
-- Forwards management frames to CPU port for analysis
-- Applies drop/pass decisions from controller
+- Parses WIDD-encapsulated frames (ethertype 0x88B5)
+- Extracts frame type, subtype, addresses, RF features
+- Forwards management frames to CPU port 255 for analysis
+- Handles Packet-Out from controller (forwards to destination port)
+- Maintains blocklist table for dropping attacker frames
 
 ### Network Layer
 
 #### Mininet-WiFi Topology (`topology/widd_topo.py`)
 Virtual wireless network with:
 - 1 Access Point (WIDD_Network, channel 6)
-- 3 Legitimate client stations (sta1, sta2, sta3)
+- 2 Legitimate client stations (sta1, sta2)
 - 1 Attacker station
-- wmediumd for realistic RF propagation simulation
-- bmv2 P4 switch integration
+- bmv2 P4 switch with CPU port veth pair
+- TC mirroring from AP wireless to switch port
 
-## Connection Flow
+## Packet Flow
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│  1. CLIENTS → MININET-WIFI (Wireless 802.11)                     │
+│  1. ATTACKER → P4 SWITCH (via AP mirroring)                      │
 │                                                                  │
-│     sta1/sta2/sta3/attacker ──(WiFi)──► ap1 (Access Point)      │
-│     - autoAssociation enabled                                    │
-│     - wmediumd simulates RSSI/propagation                        │
+│     attacker-wlan0 ──(WiFi)──► ap1-wlan1 ──(tc mirror)──► s1    │
+│     - Sends WIDD-encapsulated 802.11 frames                      │
+│     - RF features included (RSSI, phase, pilot, mag)             │
 └──────────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│  2. ACCESS POINT → BMV2 SWITCH (Ethernet Link)                   │
+│  2. P4 SWITCH → OODA CONTROLLER (Packet-In)                      │
 │                                                                  │
-│     ap1 ──(addLink)──► s1 (P4Switch running widd.p4)            │
+│     s1 ──(CPU port 255)──► s1-cpu-h ──(sniff)──► Controller     │
 │     - P4 extracts 802.11 headers                                 │
-│     - Management frames → CPU port 255                           │
-│     - Thrift API on port 9090                                    │
+│     - Prepends CPU header (reason, port, rssi)                   │
+│     - Management frames sent to CPU for analysis                 │
 └──────────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│  3. BMV2 SWITCH → OODA CONTROLLER                                │
+│  3. OODA CONTROLLER PROCESSING                                   │
 │                                                                  │
-│     s1 ──(Thrift API)────► OODA Controller (port 9090)          │
-│        ──(CPU Port)──────► Packet-In for analysis               │
+│     OBSERVE: Parse WIDD frame structure                          │
+│     ORIENT:  MOCC RF signature verification                      │
+│     DECIDE:  KCSM state machine update                           │
+│     ACT:     DROP (spoofed) or PASS (legitimate via Packet-Out)  │
+└──────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼ (if legitimate)
+┌──────────────────────────────────────────────────────────────────┐
+│  4. PACKET-OUT (Forward legitimate frames)                       │
 │                                                                  │
-│     Controller processes (ooda_controller.py):                   │
-│     - Deauth frames → MOCC identification → KCSM state update   │
-│     - Beacon frames → Evil twin detection                        │
-│     - Auth/Assoc floods → Rate limiting                          │
+│     Controller ──(CPU header + raw 802.11)──► s1-cpu-h           │
+│     P4 switch forwards to destination port                       │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -181,70 +200,59 @@ pip3 install scapy thrift
 
 ### Quick Start (Demo Mode)
 ```bash
-# Launch multi-terminal demo
+# Launch multi-terminal demo (3 windows)
 sudo ./demo_launcher.sh
 ```
 
 This opens:
-- **Terminal 1**: Mininet-WiFi topology
-- **Terminal 2**: OODA Controller with MOCC + KCSM output
+- **Terminal 1**: Mininet-WiFi topology with P4 switch
+- **Terminal 2**: OODA Controller (start_server.py)
+- **Terminal 3**: Interactive Attack CLI
 
-### Manual Start (Network Mode)
+### Manual Start
 
 1. **Start Mininet-WiFi Topology** (Terminal 1):
 ```bash
-cd /path/to/widd
 sudo python3 topology/widd_topo.py
 ```
 
 2. **Start OODA Controller** (Terminal 2):
 ```bash
-# In production mode, controller connects to bmv2 switch
-python3 -m controller.ooda_controller
+sudo python3 start_server.py
 ```
 
-3. **Launch Attack CLI** (Terminal 3 - from Mininet CLI):
+3. **Launch Attack CLI** (Terminal 3 - from attacker namespace):
 ```bash
-# From mininet-wifi CLI:
-mininet-wifi> xterm attacker
+# Find attacker PID
+ATTACKER_PID=$(pgrep -f "mininet:attacker")
 
-# In attacker terminal:
-python3 interactive_attack.py --interface attacker-wlan0
+# Run attack CLI in attacker namespace
+sudo mnexec -a $ATTACKER_PID python3 interactive_attack.py --interface attacker-wlan0
 ```
 
-The Attack CLI now sends **real packets through the network** using Scapy. All attacks go through:
-```
-Attack CLI → Scapy → Network Interface → P4 Switch → OODA Controller
-```
+### Attack CLI Commands
 
-### Demo Mode (Simulation - No Network)
-
-For testing without network hardware:
-
-1. **Start OODA Controller Server** (Terminal 1):
 ```bash
-python3 start_server.py
+# Deauthentication attack
+deauth sta1 5              # Send 5 deauth frames targeting sta1
+
+# Disassociation attack
+disassoc sta1 3            # Send 3 disassoc frames
+
+# Evil twin beacon
+evil_twin                  # Broadcast fake AP beacon
+
+# Auth/Assoc floods
+auth_flood 20              # Send 20 auth frames
+assoc_flood 15             # Send 15 assoc frames
+
+# Training data (legitimate traffic)
+train sta1 100             # Send 100 data frames as sta1
+
+# Pre-configured demos
+demo1                      # Deauth attack demo
+demo2                      # Spoofed deauth demo
 ```
-
-2. **Start Attack CLI** (Terminal 2):
-```bash
-# Simulation mode - no interface needed
-python3 interactive_attack.py
-```
-
-3. **Start Packet Monitor** (Terminal 3):
-```bash
-python3 packet_monitor.py
-```
-
-**Note**: In demo mode without `--interface`, the Attack CLI runs in dry-run mode (packets are not actually sent).
-
-Features demonstrated:
-- Device registration and RF signature learning
-- Real Scapy packet generation
-- Legitimate vs spoofed frame detection
-- MOCC probability scoring
-- KCSM attack state transitions
 
 ## Attack Types Detected
 
@@ -259,11 +267,11 @@ Features demonstrated:
 
 ## Countermeasures
 
-When an attack is detected, the system can:
-1. **Drop** spoofed frames at the P4 switch
-2. **Alert** the administrator
-3. **Inject false handshakes** to poison attacker captures
-4. **Blacklist** attacker MAC addresses
+When an attack is detected, the system:
+1. **Drops** spoofed frames (does NOT forward via Packet-Out)
+2. **Alerts** via colored console logging
+3. **Forwards** legitimate frames via Packet-Out to victim
+4. **Blocklists** attacker MAC addresses in P4 switch table
 
 ## Configuration
 
@@ -279,8 +287,8 @@ AUTH_FLOOD_THRESHOLD = 10   # frames per second
 RSSI_TOLERANCE = 10         # dB variance allowed
 
 # Controller settings
-POX_PORT = 6633
 THRIFT_PORT = 9090
+CPU_INTERFACE = 's1-cpu-h'
 ```
 
 ## Development Status
@@ -289,11 +297,13 @@ THRIFT_PORT = 9090
 - [x] KCSM state machine
 - [x] OODA controller logic
 - [x] P4 program for 802.11 parsing
-- [x] Mininet-WiFi topology
-- [x] Attack generator
-- [x] Standalone controller (no POX dependency)
-- [ ] Real 802.11 frame injection
+- [x] Mininet-WiFi topology with P4 switch
+- [x] Attack generator (Scapy-based)
+- [x] Packet-In handling (SwitchInterface)
+- [x] Packet-Out forwarding for legitimate frames
+- [x] Interactive attack CLI
 - [ ] Production deployment guide
+- [ ] Web-based monitoring dashboard
 
 ## References
 

@@ -4,22 +4,23 @@
 skinparam componentStyle rectangle
 skinparam backgroundColor #FFFFFF
 
-title WIDD System - Component Architecture\n(Direct Injection Mode)
+title WIDD System - Component Architecture\n(P4 Switch with Packet-In/Out)
 
 ' ==================== NETWORK TOPOLOGY ====================
 
 package "Mininet-WiFi Network (Simulation)" as Network #LightGreen {
     component [sta1\n00:00:00:00:00:01] as STA1
     component [sta2\n00:00:00:00:00:02] as STA2
-    component [sta3\n00:00:00:00:00:03] as STA3
 
     component [ap1\nSSID: WIDD_Network] as AP1
 
+    component [attacker\n00:00:00:00:00:99] as Attacker
+
     note bottom of Network
         Mininet-WiFi provides the
-        network namespace isolation
-        but does NOT transmit real
-        802.11 frames on the wire
+        network namespace isolation.
+        TC mirroring copies traffic
+        from AP wireless to switch.
     end note
 }
 
@@ -35,22 +36,21 @@ package "Data Plane (bmv2 P4 Switch)" as DataPlane #LightCyan {
         3. Parse wifi_addr_t (20 bytes)
         4. Parse rf_features_t (8 bytes)
 
-        **P4 Ingress:**
+        **Packet-In (to CPU):**
         - Management frames -> CPU port 255
-        - Data frames -> CPU port 255
         - Prepends cpu_header_t (4 bytes)
 
-        **P4 Deparser:**
-        emit(cpu) + emit(ethernet) +
-        emit(wifiFC) + emit(wifiAddr) +
-        emit(rfFeatures)
+        **Packet-Out (from CPU):**
+        - Parse CPU header
+        - Forward to dest port
+        - Strip CPU header
     end note
 }
 
 ' ==================== CONTROL PLANE ====================
 
 package "Control Plane (Python)" as ControlPlane #LightBlue {
-    component [PacketReceiver\nsniffs s1-cpu-h\n(Scapy)] as PacketReceiver
+    component [SwitchInterface\nPacket-In/Out\n(Scapy + raw socket)] as SwitchInterface
 
     component [OODA Controller\n(start_server.py)] as OODA
 
@@ -62,16 +62,16 @@ package "Control Plane (Python)" as ControlPlane #LightBlue {
 
     note right of OODA
         **OODA Loop:**
-        1. OBSERVE: Receive from PacketReceiver
+        1. OBSERVE: Receive from SwitchInterface
         2. ORIENT: MOCC RF verification
         3. DECIDE: KCSM state update
-        4. ACT: Drop/Pass/Alert
+        4. ACT: Drop OR forward via Packet-Out
     end note
 }
 
 ' ==================== ATTACK SIMULATION ====================
 
-package "Attack Simulation (Direct Injection)" as AttackSim #LightCoral {
+package "Attack Simulation" as AttackSim #LightCoral {
     component [attack_generator.py\n(Scapy-based)] as AttackGen
 
     component [interactive_attack.py\n(CLI Interface)] as AttackCLI
@@ -93,70 +93,70 @@ package "Attack Simulation (Direct Injection)" as AttackSim #LightCoral {
     end note
 }
 
-' ==================== DEMO/MONITORING ====================
+' ==================== DEMO LAUNCHER ====================
 
-package "Demo & Monitoring" as Demo #LightYellow {
-    component [packet_monitor.py\nUDP: 9998] as Monitor
+package "Demo Launcher" as Demo #LightYellow {
+    component [demo_launcher.sh\n3 xterm windows] as Launcher
 
-    component [demo_launcher.sh\n4 xterm windows] as Launcher
-
-    note right of Monitor
-        Receives UDP events from
-        start_server.py showing
-        OODA loop stages
+    note right of Launcher
+        Launches:
+        1. Mininet-WiFi topology
+        2. OODA Controller
+        3. Attack CLI
     end note
 }
 
 ' ==================== INTERFACES ====================
 
-' Direct injection from Attack CLI to Switch
-interface "s1-eth1\n(direct injection)" as S1_ETH1
+' Attack CLI sends through attacker interface
+interface "attacker-wlan0\n(wireless)" as AttackerWlan
 AttackCLI -down-> AttackGen : uses
-AttackGen -down-> S1_ETH1 : sendp()\nWIDD frames
-S1_ETH1 -down-> P4Switch : port 1
+AttackGen -down-> AttackerWlan : sendp()\nWIDD frames
+AttackerWlan -down-> AP1 : WiFi
 
-note right of S1_ETH1
-    **Direct Injection:**
-    Attack CLI sends WIDD-formatted
-    Ethernet frames directly to s1-eth1
+' AP mirrors to switch
+interface "ap1-eth1 <-> s1-eth1\n(tc mirroring)" as APSwitch
+AP1 -down-> APSwitch : mirror
+APSwitch -down-> P4Switch : port 1
 
-    This simulates 802.11 frames
-    captured and encapsulated by AP
+note right of APSwitch
+    **TC Mirroring:**
+    Traffic from ap1-wlan is
+    mirrored to ap1-eth1 which
+    connects to s1-eth1
 end note
 
 ' CPU Port veth pair
 interface "s1-cpu-s <-> s1-cpu-h\n(veth pair, port 255)" as CPUPort
-P4Switch -down- CPUPort
-CPUPort -down- PacketReceiver
+P4Switch -down- CPUPort : Packet-In\nPacket-Out
+CPUPort -down- SwitchInterface
+
+note left of CPUPort
+    **Bidirectional:**
+    Packet-In: P4 -> Controller
+    Packet-Out: Controller -> P4
+end note
 
 ' Control Plane internal connections
-PacketReceiver -down-> OODA : frame_info dict
+SwitchInterface -down-> OODA : PacketInEvent
 OODA *-- MOCC
 OODA *-- KCSM
 OODA ..> Logger : logs events
-
-' UDP Monitor connection
-interface "UDP 9998" as UDPMonitor
-OODA -right-> UDPMonitor : send_event()
-UDPMonitor -right-> Monitor
+OODA -up-> SwitchInterface : send_packet_out()
 
 ' Demo launcher
 Launcher ..> Network : starts
 Launcher ..> OODA : starts
 Launcher ..> AttackCLI : starts
-Launcher ..> Monitor : starts
 
 ' ==================== PACKET FLOW ====================
 
 note bottom of DataPlane
-    **Packet Flow (Direct Injection Mode):**
+    **Packet Flow:**
 
-    1. Attack CLI builds WIDD frame with:
-       - Spoofed source MAC (e.g., sta1)
-       - Attacker's RF features (different from sta1)
-       - Management frame type (e.g., deauth)
+    1. Attacker sends WIDD frame via attacker-wlan0
 
-    2. Scapy sends frame to s1-eth1 (switch port 1)
+    2. AP receives frame, TC mirrors to s1-eth1
 
     3. P4 parser extracts headers (ethertype 0x88B5)
 
@@ -166,14 +166,17 @@ note bottom of DataPlane
 
     6. Packet arrives at s1-cpu-h (controller interface)
 
-    7. PacketReceiver parses and creates frame_info
+    7. SwitchInterface parses and creates PacketInEvent
 
     8. OODA Controller:
        - MOCC detects RF signature mismatch
        - KCSM updates state machine
-       - Attack detected and logged
+       - Decision: DROP or PASS
 
-    9. UDP event sent to packet_monitor
+    9. If PASS: Controller sends Packet-Out
+       - Extracts raw 802.11 frame
+       - Sends via s1-cpu-h with CPU header
+       - P4 forwards to destination port
 end note
 
 ' ==================== LEGEND ====================
@@ -184,7 +187,7 @@ legend right
     | <#LightCyan> | Data Plane (P4/bmv2) |
     | <#LightBlue> | Control Plane (Python) |
     | <#LightCoral> | Attack Simulation |
-    | <#LightYellow> | Demo/Monitoring |
+    | <#LightYellow> | Demo Launcher |
 endlegend
 
 @enduml

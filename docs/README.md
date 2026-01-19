@@ -10,12 +10,11 @@ This directory contains UML diagrams documenting the WIDD (Wireless Intrusion De
 - **Data Plane**: P4 switch for 802.11 frame processing
 - **Control Plane**: OODA controller with MOCC and KCSM detection algorithms
 - **Attack Simulation**: Tools for testing the system
-- **Demo/Visualization**: Real-time monitoring and CLI interface
 - **Network Layer**: Mininet-WiFi topology
 
 **View this diagram to understand:**
 - How packets flow through the system
-- Communication protocols between components (Thrift, sockets, WiFi)
+- Communication protocols between components (Thrift, CPU port, WiFi)
 - Separation of concerns (data vs control plane)
 
 ### 2. Class Diagram (`architecture_uml.puml`)
@@ -29,14 +28,13 @@ This directory contains UML diagrams documenting the WIDD (Wireless Intrusion De
   - DisassocKCSM: Disassociation attack detection
   - AuthFloodKCSM: Authentication flood detection
   - AssocFloodKCSM: Association flood detection
-- **Switch Interface**: BMV2 Thrift API wrapper for P4 switch control
+- **Switch Interface**: BMV2 Thrift API + Packet-In/Out handling
 - **Attack Generation**: Scapy-based attack simulation tools
-- **Simulation & Demo**: Socket-based server for interactive demos
 - **Logging System**: Comprehensive color-coded logging
 
 **View this diagram to understand:**
 - Class hierarchies and composition
-- Data models (RFFeatures, ClientState, ParsedFrame, etc.)
+- Data models (RFFeatures, ClientState, ParsedFrame, WIDDFrameInfo, etc.)
 - Method signatures and class responsibilities
 - Design patterns used (composition, callbacks, state machines)
 
@@ -71,7 +69,7 @@ Install the "PlantUML" extension by jebbs to preview diagrams directly in VS Cod
 ### 1. OODA Loop Pattern
 The system implements the Observe-Orient-Decide-Act loop:
 ```
-Packet-In → OBSERVE (parse) → ORIENT (MOCC) → DECIDE (KCSM) → ACT (drop/inject)
+Packet-In → OBSERVE (parse) → ORIENT (MOCC) → DECIDE (KCSM) → ACT (drop/forward)
 ```
 
 ### 2. State Machine Pattern
@@ -83,8 +81,12 @@ MOCC uses Gaussian probability calculation to identify legitimate vs spoofed fra
 ### 4. Observer Pattern
 Logger observes all controller events for real-time visualization and debugging.
 
-### 5. Facade Pattern
-SimulationServer provides a simplified interface for external attack tools and monitors.
+### 5. Unified Interface Pattern
+SwitchInterface consolidates all P4 switch communication:
+- Thrift API for table management
+- Packet-In listening (Scapy sniff on CPU port)
+- Packet-Out sending (raw socket on CPU port)
+- WIDD frame parsing
 
 ## Attack Detection Flow
 
@@ -98,10 +100,16 @@ SimulationServer provides a simplified interface for external attack tools and m
 │ P4 Switch       │  Extract: Frame type, addresses, RF features
 │ (Data Plane)    │  Action: Forward to CPU port 255
 └──────┬──────────┘
-       │ Packet-In
+       │ Packet-In (CPU header + WIDD frame)
        ▼
 ┌─────────────────┐
-│ OBSERVE Phase   │  Parse frame structure
+│ SwitchInterface │  Parse: CPU header, Ethernet, WiFi FC,
+│ (Packet-In)     │         WiFi Addr, RF Features
+└──────┬──────────┘
+       │
+       ▼
+┌─────────────────┐
+│ OBSERVE Phase   │  Parse frame structure, create ParsedFrame
 └──────┬──────────┘
        │
        ▼
@@ -118,9 +126,21 @@ SimulationServer provides a simplified interface for external attack tools and m
        │
        ▼
 ┌─────────────────┐
-│ ACT Phase       │  • Drop spoofed frames
-│                 │  • Inject false handshakes
-│                 │  • Alert administrator
+│ ACT Phase       │  • DROP: Do nothing (don't forward)
+│                 │  • PASS: Forward via Packet-Out
+│                 │  • Alert via logger
+└──────┬──────────┘
+       │ (if PASS)
+       ▼
+┌─────────────────┐
+│ SwitchInterface │  Extract raw 802.11 frame
+│ (Packet-Out)    │  Send: CPU header + raw frame to CPU port
+└──────┬──────────┘
+       │
+       ▼
+┌─────────────────┐
+│ P4 Switch       │  Forward to destination port
+│ (Packet-Out)    │  (strips CPU header, emits payload)
 └─────────────────┘
 ```
 
@@ -144,6 +164,52 @@ The MOCC algorithm identifies devices by their unique RF characteristics:
 | Auth Flood | 10 auth frames | 2 seconds |
 | Assoc Flood | 10 assoc frames | 2 seconds |
 | Evil Twin | SSID match + BSSID mismatch | Instant |
+
+## Packet Formats
+
+### WIDD Frame Format (from attack_generator)
+```
+[Ethernet Header (14 bytes)]
+  - dst_mac: 6 bytes
+  - src_mac: 6 bytes
+  - ethertype: 0x88B5 (WIDD)
+[802.11 Frame Control (2 bytes)]
+  - protocol: 2 bits
+  - type: 2 bits (0=Mgmt, 1=Ctrl, 2=Data)
+  - subtype: 4 bits
+  - flags: 8 bits
+[802.11 Addresses (20 bytes)]
+  - addr1: 6 bytes (Receiver)
+  - addr2: 6 bytes (Transmitter)
+  - addr3: 6 bytes (BSSID)
+  - seq_ctrl: 2 bytes
+[RF Features (8 bytes)]
+  - rssi: int16
+  - phase_offset: uint16
+  - pilot_offset: uint16
+  - mag_squared: uint16
+[Payload (variable)]
+```
+
+### P4 Packet-In Format (to controller)
+```
+[CPU Header (4 bytes)]
+  - reason: uint8 (1=deauth, 2=assoc, etc.)
+  - orig_port: uint8
+  - rf_rssi: int16
+[WIDD Frame (as above)]
+```
+
+### Packet-Out Format (from controller)
+```
+[CPU Header (4 bytes)]
+  - reason: 0 (PASS)
+  - dest_port: uint8
+  - unused: int16
+[Raw 802.11 Frame]
+  - WiFi FC + WiFi Addr + Payload
+  - (RF features stripped)
+```
 
 ## References
 

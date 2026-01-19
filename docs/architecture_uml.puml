@@ -107,6 +107,7 @@ package "P4 Data Plane (widd.p4)" <<Network>> {
         == Tables ==
         +l2_forward
         +device_lookup
+        +blocklist
     }
 
     class "WiddParser" as Parser <<Network>> {
@@ -114,6 +115,10 @@ package "P4 Data Plane (widd.p4)" <<Network>> {
         +parse_wifi_fc()
         +parse_wifi_addr()
         +parse_rf_features()
+        +parse_cpu_header()
+        --
+        Handles both Packet-In
+        and Packet-Out paths
     }
 
     class "WiddIngress" as Ingress <<Network>> {
@@ -121,9 +126,10 @@ package "P4 Data Plane (widd.p4)" <<Network>> {
         +knownDevices: register
         --
         +apply()
+        -check blocklist
         -check frame type
         -send mgmt frames to CPU
-        -send data frames to CPU
+        -handle Packet-Out forwarding
     }
 
     class "WiddDeparser" as Deparser <<Network>> {
@@ -132,6 +138,8 @@ package "P4 Data Plane (widd.p4)" <<Network>> {
         +emit(wifiFC)
         +emit(wifiAddr)
         +emit(rfFeatures)
+        --
+        Only emits valid headers
     }
 }
 
@@ -156,7 +164,7 @@ package "Network Topology (widd_topo.py)" <<Network>> {
         == Network Components ==
         +ap1: AccessPoint
         +s1: P4Switch
-        +sta1, sta2, sta3: Station
+        +sta1, sta2: Station
         +attacker: Station
         == Connections ==
         ap1 <-> s1 (ap1-eth1 <-> s1-eth1)
@@ -166,25 +174,10 @@ package "Network Topology (widd_topo.py)" <<Network>> {
     }
 }
 
-' ==================== PACKET RECEIVER ====================
-package "Packet Receiver (packet_receiver.py)" <<Controller>> {
+' ==================== SWITCH INTERFACE ====================
+package "Switch Interface (switch_interface.py)" <<Controller>> {
 
-    class PacketReceiver <<Controller>> {
-        +interface: str = "s1-cpu-h"
-        +callback: Callable
-        +running: bool
-        +thread: Thread
-        --
-        +start()
-        +stop()
-        -_sniff_packets()
-        -_handle_packet(pkt)
-        -_parse_widd_frame(payload): dict
-        --
-        Uses Scapy sniff()
-    }
-
-    class "frame_info dict" as FrameInfo <<Data>> {
+    class WIDDFrameInfo <<Data>> {
         +frame_type: str
         +subtype: str
         +frame_type_num: int
@@ -200,21 +193,98 @@ package "Packet Receiver (packet_receiver.py)" <<Controller>> {
         +cpu_reason: int
         +cpu_orig_port: int
         +raw_payload: bytes
+        +raw_bytes: bytes
+        +error: str
     }
+
+    class PacketInEvent <<Controller>> {
+        +raw_packet: bytes
+        +reason: int
+        +orig_port: int
+        +rssi: int
+        +payload: bytes
+        +frame_info: WIDDFrameInfo
+        --
+        +_parse()
+        +_parse_widd_frame(): WIDDFrameInfo
+        +get_reason_name(): str
+        +to_dict(): dict
+    }
+
+    class SwitchInterface <<Controller>> {
+        +thrift_ip: str
+        +thrift_port: int
+        +cpu_iface: str
+        +client: Standard.Client
+        +packet_in_callback: Callable
+        +stop_event: Event
+        --
+        +connect(): bool
+        +disconnect()
+        +add_table_entry(...)
+        +delete_table_entry(...)
+        +block_attacker(mac): int
+        +unblock_attacker(handle): bool
+        +read_register(name, idx): int
+        +write_register(name, idx, val): bool
+        +read_counter(name, idx): tuple
+        +start_packet_in_listener(callback, iface)
+        +stop_packet_in_listener()
+        +send_packet_out(port, packet): bool
+        -_packet_in_loop(iface)
+    }
+
+    note right of SwitchInterface
+        **Unified Interface:**
+        - Thrift API for table management
+        - Scapy sniff for Packet-In
+        - Raw socket for Packet-Out
+        - WIDD frame parsing
+    end note
 }
 
 ' ==================== OODA CONTROLLER ====================
 package "OODA Controller (controller/)" <<Controller>> {
 
+    class ParsedFrame <<Data>> {
+        +eth_dst: bytes
+        +eth_src: bytes
+        +eth_type: int
+        +frame_type: int
+        +subtype: int
+        +addr1: str
+        +addr2: str
+        +addr3: str
+        +rssi: int
+        +phase_offset: int
+        +pilot_offset: int
+        +mag_squared: int
+        +cpu_reason: int
+        +orig_port: int
+        +raw_bytes: bytes
+    }
+
     class OODAController <<Controller>> {
+        +switch: SwitchInterface
         +mocc: MOCC
         +kcsm: KCSMManager
         +known_clients: list
         +stats: dict
+        +network_ssid: str
+        +network_bssid: str
         --
+        +set_network_info(ssid, bssid)
         +register_client(mac, rssi)
-        +process_frame(frame_info)
+        +simulate_frame(type, mac, ...)
         +get_stats(): dict
+        -_process_deauth(frame, rf)
+        -_process_disassoc(frame, rf)
+        -_process_auth(frame)
+        -_process_assoc(frame)
+        -_process_beacon(frame)
+        -_process_data(frame, rf)
+        -_forward_frame(frame): bool
+        -_block_attacker(mac): bool
     }
 
     class MOCC <<Detection>> {
@@ -223,25 +293,31 @@ package "OODA Controller (controller/)" <<Controller>> {
         --
         {static} +THRESHOLD: float = 0.35
         --
-        +register_device(mac)
-        +update_device_rssi(mac, rssi)
-        +add_sample(mac, rf_features)
-        +verify_device(mac, rf_features): bool
-        +is_device_registered(mac): bool
+        +register_device(mac, rssi)
+        +train(mac, rf_features)
+        +identify(mac, rf_features): tuple
+        +get_training_status(mac): dict
         +get_probability(mac, rf_features): float
     }
 
+    class RFFeatures <<Data>> {
+        +rssi: int
+        +phase_offset: int
+        +pilot_offset: int
+        +mag_squared: int
+    }
+
     class KCSMManager <<Detection>> {
-        -client_states: dict
-        -attack_counts: dict
+        +deauth_kcsm: DeauthKCSM
+        +disassoc_kcsm: DisassocKCSM
+        +auth_flood_kcsm: AuthFloodKCSM
+        +assoc_flood_kcsm: AssocFloodKCSM
         --
-        +process_deauth(mac, is_legitimate)
-        +process_disassoc(mac, is_legitimate)
-        +process_auth(mac)
-        +process_assoc(mac)
-        +process_beacon(ssid, bssid)
-        +report_attack(mac, attack_type)
-        +get_stats(): dict
+        +process_deauth(mac, is_legit): tuple
+        +process_disassoc(mac, is_legit): tuple
+        +process_auth(): AttackType
+        +process_assoc(): AttackType
+        +process_beacon(ssid, bssid): AttackType
     }
 
     class WIDDLogger <<Controller>> {
@@ -251,6 +327,10 @@ package "OODA Controller (controller/)" <<Controller>> {
         +system_info(msg)
         +system_start(component)
         +system_stop(component)
+        +ooda_observe(frame_type, mac)
+        +ooda_orient_mocc(mac, prob, legit)
+        +ooda_decide_drop(reason, mac)
+        +ooda_decide_pass(mac)
         +attack_detected(msg)
         +print_stats()
     }
@@ -262,16 +342,14 @@ package "Server Entry Point (start_server.py)" <<Controller>> {
     class "main()" as StartServer <<Controller>> {
         == Initialization ==
         +controller: OODAController
-        +receiver: PacketReceiver
-        == UDP Monitor ==
-        +monitor_socket: UDP
-        +MONITOR_ADDR: (127.0.0.1, 9998)
+        +switch_interface: SwitchInterface
         == Functions ==
-        +send_event(stage, frame_type, src_mac, details)
-        +handle_packet(frame_info)
+        +handle_packet(event: PacketInEvent)
         --
-        Listens on s1-cpu-h
-        Sends UDP events to packet_monitor
+        1. Creates OODAController
+        2. Trains MOCC with data frames
+        3. Starts SwitchInterface listener
+        4. Processes Packet-In events
     }
 }
 
@@ -288,12 +366,12 @@ package "Attack Generation (attacks/)" <<Attack>> {
         +attacker_mag: int = 3500
         --
         +send_frame(frame, dst_mac, src_mac)
-        +deauth_attack(victim_mac, count, interval, spoof): int
-        +disassoc_attack(victim_mac, count, interval)
+        +deauth_attack(victim, count, interval, spoof): int
+        +disassoc_attack(victim, count, interval)
         +auth_flood(count, interval)
         +assoc_flood(count, interval)
         +evil_twin_beacon(ssid, count, interval)
-        +generate_legitimate_data(client_mac, count, rssi, phase, pilot, mag)
+        +generate_legitimate_data(mac, count, rssi, ...)
     }
 
     class "build_widd_frame()" as BuildFrame <<Attack>> {
@@ -309,14 +387,6 @@ package "Attack Generation (attacks/)" <<Attack>> {
         +payload: bytes
         --
         Returns: bytes (WIDD payload)
-    }
-
-    class "build_wifi_fc()" as BuildFC <<Attack>> {
-        +frame_type: int
-        +subtype: int
-        --
-        fc = (frame_type << 2) | (subtype << 4)
-        Returns: struct.pack('!H', fc)
     }
 }
 
@@ -345,23 +415,6 @@ package "Interactive CLI (interactive_attack.py)" <<Attack>> {
     }
 }
 
-' ==================== PACKET MONITOR ====================
-package "Packet Monitor (packet_monitor.py)" <<Controller>> {
-
-    class PacketMonitor <<Controller>> {
-        +port: int = 9998
-        +running: bool
-        +sock: UDP socket
-        --
-        +start()
-        +stop()
-        +display_event(event)
-        --
-        Listens for UDP events
-        from start_server.py
-    }
-}
-
 ' ==================== DEMO LAUNCHER ====================
 package "Demo Launcher (demo_launcher.sh)" {
 
@@ -370,13 +423,11 @@ package "Demo Launcher (demo_launcher.sh)" {
         +TERM_MININET: Mininet CLI
         +TERM_CONTROLLER: start_server.py
         +TERM_ATTACKER: interactive_attack.py
-        +TERM_MONITOR: packet_monitor.py
         == Functions ==
         +compile_p4()
         +launch_mininet()
         +launch_controller()
         +launch_attacker()
-        +launch_monitor()
         +cleanup()
     }
 }
@@ -397,48 +448,30 @@ P4Switch *-- Deparser
 ' Topology to P4
 P4SwitchClass ..> P4Switch : runs
 
-' Packet flow
-Deparser -down-> PacketReceiver : emits to s1-cpu-h
-PacketReceiver ..> FrameInfo : creates
-PacketReceiver -down-> StartServer : callback
+' Switch Interface
+PacketInEvent *-- WIDDFrameInfo
+SwitchInterface ..> PacketInEvent : creates
+Deparser -down-> SwitchInterface : emits to s1-cpu-h
 
 ' OODA Controller
 StartServer *-- OODAController
+StartServer *-- SwitchInterface
+SwitchInterface -down-> StartServer : callback
 OODAController *-- MOCC
 OODAController *-- KCSMManager
 OODAController ..> WIDDLogger : uses
+OODAController ..> ParsedFrame : creates
+OODAController ..> RFFeatures : creates
+OODAController -up-> SwitchInterface : send_packet_out()
 
 ' Attack generation
 InteractiveAttackCLI *-- AttackGenerator
 AttackGenerator ..> BuildFrame : uses
-BuildFrame ..> BuildFC : uses
 AttackGenerator ..> WIDDFrame : creates
-
-' Monitor
-StartServer ..> PacketMonitor : UDP events
 
 ' Demo launcher
 DemoLauncher ..> Topology : starts
 DemoLauncher ..> StartServer : starts
 DemoLauncher ..> InteractiveAttackCLI : starts
-DemoLauncher ..> PacketMonitor : starts
-
-' ==================== NOTES ====================
-
-note bottom of BuildFC
-    **POTENTIAL ISSUE:**
-    802.11 FC uses little-endian on wire
-    but struct.pack('!H', fc) uses big-endian
-    This may cause parsing issues in P4
-end note
-
-note right of PacketReceiver
-    **Current Issue:**
-    Packets arriving show "No Ethernet layer"
-    or wrong ethertype (0x86DD instead of 0x88B5)
-
-    mininet-wifi wireless simulation
-    may be transforming the packet format
-end note
 
 @enduml
