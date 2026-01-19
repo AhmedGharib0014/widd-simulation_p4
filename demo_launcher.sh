@@ -6,7 +6,6 @@
 #   - Terminal 0: Mininet-WiFi Network (with bmv2 P4 switch)
 #   - Terminal 1: OODA Controller (MOCC + KCSM) in server mode
 #   - Terminal 2: Attack CLI (interactive attack console)
-#   - Terminal 3: Packet Monitor (real-time flow visualization)
 #
 # Usage:
 #   ./demo_launcher.sh              # Smart mode (auto-detects if P4 needs recompilation)
@@ -21,10 +20,9 @@ MININET_PID_FILE="/tmp/widd_mininet.pid"
 
 # Screen positions (adjust based on your screen resolution)
 # Format: geometry WIDTHxHEIGHT+X+Y
-TERM_MININET="80x20+0+0"         # Top-left: Mininet Network
-TERM_CONTROLLER="80x30+0+350"    # Bottom-left: OODA Controller
-TERM_ATTACKER="80x30+950+0"      # Top-right: Attack CLI
-TERM_MONITOR="80x30+950+350"     # Bottom-right: Packet Monitor
+TERM_MININET="80x25+0+0"         # Top-left: Mininet Network
+TERM_CONTROLLER="120x30+100+370"    # Bottom-left: OODA Controller
+TERM_ATTACKER="80x25+950+0"      # Top-right: Attack CLI
 
 # XTerm colors and fonts - all terminals use the same settings
 XTERM_OPTS="-fa 'Monospace' -fs 7 -bg black -fg white"
@@ -38,7 +36,6 @@ cleanup() {
     # Kill Python processes
     pkill -f "start_server" 2>/dev/null || true
     pkill -f "interactive_attack" 2>/dev/null || true
-    pkill -f "packet_monitor" 2>/dev/null || true
 
     # Clean up Mininet network
     echo "[*] Stopping Mininet network..."
@@ -203,17 +200,6 @@ launch_attacker() {
     echo "[+] Attack CLI launched (sending frames via $ATTACK_IFACE)"
 }
 
-launch_monitor() {
-    echo "[*] Launching Packet Monitor..."
-
-    xterm -title "WIDD-Packet-Monitor" \
-          -geometry $TERM_MONITOR \
-          $XTERM_OPTS \
-          -e "cd $PROJECT_DIR && python3 packet_monitor.py; read -p 'Press Enter to close...'" &
-
-    sleep 1
-    echo "[+] Packet Monitor launched (listening for events)"
-}
 
 check_prerequisites() {
     echo "[*] Checking prerequisites..."
@@ -291,9 +277,7 @@ main() {
     echo "[*] Waiting for OODA Controller to initialize (3 seconds)..."
     sleep 3
 
-    launch_monitor
-
-    # Launch monitoring and attack terminals
+    # Launch attack terminal
     launch_attacker
   
 

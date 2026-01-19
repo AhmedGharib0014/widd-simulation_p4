@@ -2,8 +2,8 @@
 """
 WIDD Server - Entry point for running OODA Controller in server mode
 
-This script initializes the OODA Controller and starts the SimulationServer
-to accept connections from the Attack CLI and Packet Monitor.
+This script initializes the OODA Controller and listens for Packet-In
+events from the P4 switch via the CPU port interface.
 
 Usage:
     sudo python3 start_server.py
