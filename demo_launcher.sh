@@ -1,15 +1,19 @@
 #!/bin/bash
 #
-# WIDD Multi-Terminal Demo Launcher
+# WIDD Demo Launcher - DEPRECATED
 #
-# Launches multiple xterm windows to visualize the complete WIDD system:
-#   - Terminal 1: OODA Controller (MOCC + KCSM) in server mode
-#   - Terminal 2: Attack CLI (interactive attack console)
-#   - Terminal 3: Packet Monitor (real-time flow visualization)
+# ⚠️  This script is deprecated and no longer functional.
 #
-# Usage:
-#   ./demo_launcher.sh           # Interactive mode
-#   ./demo_launcher.sh --auto    # Auto-run demo
+# The interactive attack CLI now requires real network mode with mininet-wifi,
+# and no longer supports the simulation mode that this launcher was designed for.
+#
+# For real network testing (RECOMMENDED):
+#   See NETWORK_SETUP.md for step-by-step instructions
+#
+# What changed:
+#   - interactive_attack.py now sends real packets via Scapy
+#   - All attacks go through: Scapy → Mininet-WiFi → BMV2 P4 Switch → OODA Controller
+#   - This tests the complete system (no simulation bypass)
 #
 
 # Colors for output
@@ -166,30 +170,43 @@ show_help() {
     echo -e "${GREEN}Press Ctrl+C to stop all terminals and exit${NC}"
 }
 
+show_deprecation_notice() {
+    echo ""
+    echo -e "${RED}╔═══════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${RED}║                     ⚠️  DEPRECATED SCRIPT ⚠️                       ║${NC}"
+    echo -e "${RED}╚═══════════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${YELLOW}This demo launcher is no longer functional.${NC}"
+    echo ""
+    echo -e "The WIDD system has been updated to use ${GREEN}Real Network Mode${NC} which tests"
+    echo -e "the complete flow through mininet-wifi and bmv2 P4 switch."
+    echo ""
+    echo -e "${CYAN}Why this change?${NC}"
+    echo -e "  • Old: Attack CLI → Socket → Controller ${RED}(bypassed all layers!)${NC}"
+    echo -e "  • New: Attack CLI → Scapy → Mininet → BMV2 → Controller ${GREEN}(real flow!)${NC}"
+    echo ""
+    echo -e "${CYAN}How to run WIDD now:${NC}"
+    echo ""
+    echo -e "  ${GREEN}Step 1:${NC} Read the setup guide"
+    echo -e "          ${BLUE}cat NETWORK_SETUP.md${NC}"
+    echo ""
+    echo -e "  ${GREEN}Step 2:${NC} Start mininet-wifi topology (Terminal 1)"
+    echo -e "          ${BLUE}sudo python3 topology/widd_topo.py${NC}"
+    echo ""
+    echo -e "  ${GREEN}Step 3:${NC} Start OODA controller (Terminal 2)"
+    echo -e "          ${BLUE}python3 run_controller.py${NC}"
+    echo ""
+    echo -e "  ${GREEN}Step 4:${NC} Launch attack CLI from mininet (Terminal 3)"
+    echo -e "          ${BLUE}mininet-wifi> xterm attacker${NC}"
+    echo -e "          ${BLUE}python3 interactive_attack.py --interface attacker-wlan0${NC}"
+    echo ""
+    echo -e "${YELLOW}For complete instructions, see: ${GREEN}NETWORK_SETUP.md${NC}"
+    echo ""
+}
+
 main() {
     print_banner
-    check_requirements
-
-    echo ""
-    echo -e "${YELLOW}[*] Starting WIDD Interactive Demo...${NC}"
-    echo ""
-
-    # Launch all terminals
-    launch_controller
-    launch_attacker
-    launch_monitor
-
-    show_help
-
-    echo ""
-    echo -e "${GREEN}[+] All terminals launched!${NC}"
-    echo ""
-    echo -e "${CYAN}Demo is running. Press Ctrl+C to stop.${NC}"
-
-    # Wait for user to stop
-    while true; do
-        sleep 1
-    done
+    show_deprecation_notice
 }
 
 # Run main

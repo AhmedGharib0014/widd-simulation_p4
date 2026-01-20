@@ -54,8 +54,8 @@ widd/
 │   ├── widd.p4               # P4 program for bmv2 switch
 │   ├── widd.json             # Compiled P4 program
 │   └── Makefile              # P4 compilation rules
-├── demo_launcher.sh          # Multi-terminal demo script
-└── interactive_attack.py     # Interactive attack CLI
+├── demo_launcher.sh          # [DEPRECATED] Legacy simulation launcher
+└── interactive_attack.py     # Interactive attack CLI (requires --interface)
 ```
 
 ## Components
