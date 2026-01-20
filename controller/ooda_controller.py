@@ -19,8 +19,13 @@ from typing import Optional, Callable, Dict
 from dataclasses import dataclass
 from enum import Enum
 
-from controller.switch_interface import SwitchInterface, PacketInEvent, CPU_REASON_DEAUTH, \
-    CPU_REASON_AUTH, CPU_REASON_ASSOC, CPU_REASON_BEACON, CPU_REASON_DISASSOC, CPU_REASON_DATA
+from controller.switch_interface import (
+    SwitchInterface, PacketInEvent,
+    CPU_REASON_DEAUTH, CPU_REASON_AUTH, CPU_REASON_ASSOC,
+    CPU_REASON_BEACON, CPU_REASON_DISASSOC, CPU_REASON_DATA,
+    build_deauth_frame, build_disassoc_frame, build_80211_management_frame,
+    SUBTYPE_DEAUTH, SUBTYPE_DISASSOC
+)
 from controller.mocc import MOCC, RFFeatures
 from controller.kcsm import KCSMManager, AttackType
 from controller.logger import logger, WIDDLogger
@@ -427,55 +432,90 @@ class OODAController:
         Forward a legitimate frame to its destination via Packet-Out through P4 switch.
 
         This is called when MOCC verifies the frame is from a legitimate source.
-        Extracts the raw 802.11 frame (without Ethernet/RF encapsulation) and
-        sends it back through the P4 switch to the destination port.
+        Constructs a clean 802.11 management frame with only the essential fields
+        needed for the AP to process the action (e.g., deauthenticate a station).
+
+        For deauth/disassoc frames, the 802.11 management frame structure is:
+        - Frame Control (2 bytes)
+        - Duration (2 bytes)
+        - Destination MAC (6 bytes)
+        - Source MAC (6 bytes)
+        - BSSID (6 bytes)
+        - Sequence Control (2 bytes)
+        - Reason Code (2 bytes)
 
         Flow: Controller -> P4 Switch (CPU port) -> Destination Port -> AP -> Victim
 
         Args:
-            frame: The parsed frame to forward (contains raw_bytes)
+            frame: The parsed frame to forward (contains parsed fields)
 
         Returns:
             True if successfully forwarded
         """
-        if not frame.raw_bytes:
-            logger.system_info("[ACT] Cannot forward frame: no raw_bytes data")
-            return False
+        # Extract reason code from original frame payload if available
+        reason_code = 3  # Default: "Deauthenticated because sending station is leaving"
 
-        # Extract raw 802.11 frame from encapsulated packet
-        # Original format: [CPU(4)][Ethernet(14)][WiFi FC(2)][WiFi Addr(20)][RF(8)][Payload]
-        # We want: [WiFi FC(2)][WiFi Addr(20)][Payload] - pure 802.11 frame
-        CPU_HDR_SIZE = 4
-        ETH_HDR_SIZE = 14
-        WIFI_FC_SIZE = 2
-        WIFI_ADDR_SIZE = 20
-        RF_SIZE = 8
+        if frame.raw_bytes:
+            # Get payload after RF features
+            CPU_HDR_SIZE = 4
+            ETH_HDR_SIZE = 14
+            WIFI_FC_SIZE = 2
+            WIFI_ADDR_SIZE = 20
+            RF_SIZE = 8
+            payload_start = CPU_HDR_SIZE + ETH_HDR_SIZE + WIFI_FC_SIZE + WIFI_ADDR_SIZE + RF_SIZE
+            if len(frame.raw_bytes) > payload_start + 1:
+                # Parse reason code as little-endian 16-bit
+                reason_code = struct.unpack('<H', frame.raw_bytes[payload_start:payload_start + 2])[0]
 
-        wifi_fc_start = CPU_HDR_SIZE + ETH_HDR_SIZE
-        wifi_addr_end = wifi_fc_start + WIFI_FC_SIZE + WIFI_ADDR_SIZE
-        rf_end = wifi_addr_end + RF_SIZE
+        # Build the appropriate 802.11 management frame using helper functions
+        subtype = frame.subtype
 
-        # Raw 802.11 frame: WiFi FC + WiFi Addr + Payload (skip RF features)
-        raw_80211_frame = frame.raw_bytes[wifi_fc_start:wifi_addr_end] + frame.raw_bytes[rf_end:]
+        if subtype == SUBTYPE_DEAUTH:
+            raw_80211_frame = build_deauth_frame(
+                dst_mac=frame.addr1,   # Destination (receiver)
+                src_mac=frame.addr2,   # Source (transmitter)
+                bssid=frame.addr3,     # BSSID
+                reason_code=reason_code
+            )
+        elif subtype == SUBTYPE_DISASSOC:
+            raw_80211_frame = build_disassoc_frame(
+                dst_mac=frame.addr1,
+                src_mac=frame.addr2,
+                bssid=frame.addr3,
+                reason_code=reason_code
+            )
+        else:
+            # Generic management frame
+            payload = struct.pack('<H', reason_code) if reason_code else b''
+            raw_80211_frame = build_80211_management_frame(
+                frame_type=frame.frame_type,
+                subtype=subtype,
+                dst_mac=frame.addr1,
+                src_mac=frame.addr2,
+                bssid=frame.addr3,
+                payload=payload
+            )
 
-        logger.system_info(f"[ACT] Extracted raw 802.11 frame: {len(raw_80211_frame)} bytes")
-        logger.system_info(f"[ACT] Frame hex: {raw_80211_frame[:20].hex()}...")
+        logger.system_info(f"[ACT] Built 802.11 management frame: {len(raw_80211_frame)} bytes")
+        logger.system_info(f"[ACT] Frame type={frame.frame_type}, subtype=0x{subtype:X}")
+        logger.system_info(f"[ACT] Addresses: dst={frame.addr1}, src={frame.addr2}, bssid={frame.addr3}")
+        logger.system_info(f"[ACT] Reason code: {reason_code}")
+        logger.system_info(f"[ACT] Frame hex: {raw_80211_frame.hex()}")
 
         # Determine destination port from the original ingress port
         # The frame came in on orig_port, we need to send it back out the same way
-        # to reach the victim (the AP interface)
         dest_port = frame.orig_port
 
-        logger.system_info(f"[ACT] Forwarding raw 802.11 via P4 Packet-Out to port {dest_port}")
+        logger.system_info(f"[ACT] Forwarding 802.11 frame via P4 Packet-Out to port {dest_port}")
 
         # Send via P4 switch Packet-Out
-        # The P4 parser accepts: [CPU Header][Raw 802.11 payload]
+        # The P4 parser accepts: [CPU Header][payload]
         # send_packet_out() prepends the CPU header automatically
         success = self.switch.send_packet_out(dest_port, raw_80211_frame)
 
         if success:
             self.stats['frames_forwarded'] = self.stats.get('frames_forwarded', 0) + 1
-            logger.system_info(f"[ACT] Sent raw 802.11 frame via Packet-Out to port {dest_port} ({len(raw_80211_frame)} bytes)")
+            logger.system_info(f"[ACT] Sent 802.11 frame via Packet-Out to port {dest_port} ({len(raw_80211_frame)} bytes)")
         else:
             logger.system_info(f"[ACT] Failed to send Packet-Out")
 

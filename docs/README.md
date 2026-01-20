@@ -29,6 +29,7 @@ This directory contains UML diagrams documenting the WIDD (Wireless Intrusion De
   - AuthFloodKCSM: Authentication flood detection
   - AssocFloodKCSM: Association flood detection
 - **Switch Interface**: BMV2 Thrift API + Packet-In/Out handling
+- **AP Agent**: Receives controller decisions and executes deauth/disassoc via hostapd
 - **Attack Generation**: Scapy-based attack simulation tools
 - **Logging System**: Comprehensive color-coded logging
 
@@ -133,14 +134,26 @@ SwitchInterface consolidates all P4 switch communication:
        │ (if PASS)
        ▼
 ┌─────────────────┐
-│ SwitchInterface │  Extract raw 802.11 frame
-│ (Packet-Out)    │  Send: CPU header + raw frame to CPU port
+│ SwitchInterface │  Build standard 802.11 management frame (26 bytes)
+│ (Packet-Out)    │  Send: CPU header + raw 802.11 frame to CPU port
 └──────┬──────────┘
        │
        ▼
 ┌─────────────────┐
-│ P4 Switch       │  Forward to destination port
-│ (Packet-Out)    │  (strips CPU header, emits payload)
+│ P4 Switch       │  Forward to destination port (AP eth interface)
+│ (Packet-Out)    │  (strips CPU header, emits 802.11 payload)
+└──────┬──────────┘
+       │
+       ▼
+┌─────────────────┐
+│ AP Agent        │  Sniff on ap1-eth2, parse 802.11 frame
+│ (ap_agent.py)   │  Execute: hostapd_cli -i ap1-wlan1 deauthenticate <MAC>
+└──────┬──────────┘
+       │
+       ▼
+┌─────────────────┐
+│ Station         │  Receives deauth from hostapd
+│ Disconnected    │  Actually removed from network
 └─────────────────┘
 ```
 
@@ -204,12 +217,21 @@ The MOCC algorithm identifies devices by their unique RF characteristics:
 ```
 [CPU Header (4 bytes)]
   - reason: 0 (PASS)
-  - dest_port: uint8
+  - dest_port: uint8 (port 1 = AP eth interface)
   - unused: int16
-[Raw 802.11 Frame]
-  - WiFi FC + WiFi Addr + Payload
-  - (RF features stripped)
+[Standard 802.11 Management Frame (26 bytes for deauth/disassoc)]
+  - Frame Control: 2 bytes (type=0 mgmt, subtype=0xC deauth or 0xA disassoc)
+  - Duration: 2 bytes (0x0000)
+  - Address 1 (Destination): 6 bytes - target station MAC
+  - Address 2 (Source): 6 bytes - AP/BSSID MAC
+  - Address 3 (BSSID): 6 bytes - AP/BSSID MAC
+  - Sequence Control: 2 bytes
+  - Reason Code: 2 bytes (e.g., 3 = "station is leaving")
 ```
+
+The controller constructs a proper 802.11 management frame without RF features.
+The P4 switch forwards this to port 1 (AP eth interface).
+The AP Agent sniffs on ap1-eth1, parses the frame, and executes hostapd_cli to disconnect the station.
 
 ## References
 

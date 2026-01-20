@@ -71,6 +71,162 @@ SUBTYPE_NAMES = {
     0xA: 'Disassoc', 0xB: 'Auth', 0xC: 'Deauth'
 }
 
+# 802.11 Frame Types
+FRAME_TYPE_MANAGEMENT = 0
+FRAME_TYPE_CONTROL = 1
+FRAME_TYPE_DATA = 2
+
+# 802.11 Management Subtypes
+SUBTYPE_ASSOC_REQ = 0x0
+SUBTYPE_AUTH = 0xB
+SUBTYPE_DEAUTH = 0xC
+SUBTYPE_DISASSOC = 0xA
+SUBTYPE_BEACON = 0x8
+
+
+def mac_to_bytes(mac: str) -> bytes:
+    """Convert MAC address string (xx:xx:xx:xx:xx:xx) to 6 bytes."""
+    return bytes.fromhex(mac.replace(':', ''))
+
+
+def build_80211_frame_control(frame_type: int, subtype: int, flags: int = 0) -> bytes:
+    """
+    Build 802.11 Frame Control field (2 bytes, little-endian).
+
+    Standard 802.11 Frame Control layout (little-endian):
+    Byte 0: Protocol(2b) + Type(2b) + Subtype(4b)
+    Byte 1: Flags (toDS, fromDS, moreFrag, retry, pwrMgmt, moreData, protected, order)
+
+    Args:
+        frame_type: 0=Management, 1=Control, 2=Data
+        subtype: Subtype value (e.g., 0xC for Deauth)
+        flags: Flag byte (default 0)
+
+    Returns:
+        2 bytes of Frame Control
+    """
+    # Protocol version = 0 (bits 0-1)
+    # Type in bits 2-3
+    # Subtype in bits 4-7
+    fc_byte0 = (frame_type << 2) | (subtype << 4)
+    fc_byte1 = flags & 0xFF
+    return bytes([fc_byte0, fc_byte1])
+
+
+def build_80211_management_frame(
+    frame_type: int,
+    subtype: int,
+    dst_mac: str,
+    src_mac: str,
+    bssid: str,
+    seq_num: int = 0,
+    payload: bytes = b''
+) -> bytes:
+    """
+    Build a complete 802.11 management frame.
+
+    Standard 802.11 management frame structure:
+    - Frame Control (2 bytes)
+    - Duration (2 bytes)
+    - Address 1 - Destination (6 bytes)
+    - Address 2 - Source (6 bytes)
+    - Address 3 - BSSID (6 bytes)
+    - Sequence Control (2 bytes)
+    - Payload (variable)
+
+    Args:
+        frame_type: 0 for Management
+        subtype: Management subtype (0xC=Deauth, 0xA=Disassoc, etc.)
+        dst_mac: Destination MAC address
+        src_mac: Source MAC address
+        bssid: BSSID
+        seq_num: Sequence number (12 bits)
+        payload: Frame body (e.g., reason code for deauth)
+
+    Returns:
+        Complete 802.11 management frame bytes
+    """
+    # Frame Control (2 bytes)
+    frame_control = build_80211_frame_control(frame_type, subtype)
+
+    # Duration (2 bytes) - 0 for management frames
+    duration = bytes([0x00, 0x00])
+
+    # Addresses (6 bytes each)
+    addr1 = mac_to_bytes(dst_mac)
+    addr2 = mac_to_bytes(src_mac)
+    addr3 = mac_to_bytes(bssid)
+
+    # Sequence Control (2 bytes, little-endian)
+    # Format: Fragment Number (4 bits) + Sequence Number (12 bits)
+    seq_ctrl = struct.pack('<H', (seq_num & 0xFFF) << 4)
+
+    return frame_control + duration + addr1 + addr2 + addr3 + seq_ctrl + payload
+
+
+def build_deauth_frame(dst_mac: str, src_mac: str, bssid: str,
+                       reason_code: int = 3, seq_num: int = 0) -> bytes:
+    """
+    Build a 802.11 deauthentication frame.
+
+    Args:
+        dst_mac: Destination MAC (station to deauth)
+        src_mac: Source MAC (typically AP BSSID)
+        bssid: BSSID
+        reason_code: Deauth reason (default 3 = "Leaving BSS")
+        seq_num: Sequence number
+
+    Returns:
+        Complete deauth frame bytes
+
+    Common reason codes:
+        1: Unspecified reason
+        2: Previous authentication no longer valid
+        3: Deauthenticated because sending station is leaving
+        4: Disassociated due to inactivity
+        7: Class 3 frame received from nonassociated station
+    """
+    # Reason code as 2-byte little-endian
+    payload = struct.pack('<H', reason_code)
+
+    return build_80211_management_frame(
+        frame_type=FRAME_TYPE_MANAGEMENT,
+        subtype=SUBTYPE_DEAUTH,
+        dst_mac=dst_mac,
+        src_mac=src_mac,
+        bssid=bssid,
+        seq_num=seq_num,
+        payload=payload
+    )
+
+
+def build_disassoc_frame(dst_mac: str, src_mac: str, bssid: str,
+                         reason_code: int = 8, seq_num: int = 0) -> bytes:
+    """
+    Build a 802.11 disassociation frame.
+
+    Args:
+        dst_mac: Destination MAC (station to disassoc)
+        src_mac: Source MAC (typically AP BSSID)
+        bssid: BSSID
+        reason_code: Disassoc reason (default 8 = "Disassociated because sending station is leaving")
+        seq_num: Sequence number
+
+    Returns:
+        Complete disassoc frame bytes
+    """
+    payload = struct.pack('<H', reason_code)
+
+    return build_80211_management_frame(
+        frame_type=FRAME_TYPE_MANAGEMENT,
+        subtype=SUBTYPE_DISASSOC,
+        dst_mac=dst_mac,
+        src_mac=src_mac,
+        bssid=bssid,
+        seq_num=seq_num,
+        payload=payload
+    )
+
 
 @dataclass
 class WIDDFrameInfo:

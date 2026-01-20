@@ -6,6 +6,11 @@
 #   - Terminal 0: Mininet-WiFi Network (with bmv2 P4 switch)
 #   - Terminal 1: OODA Controller (MOCC + KCSM) in server mode
 #   - Terminal 2: Attack CLI (interactive attack console)
+#   - Terminal 3: AP Agent (receives controller decisions, executes deauth)
+#
+# Data Flow:
+#   Attack:    Attacker -> AP (wireless) -> P4 Switch -> Controller (OODA)
+#   Response:  Controller -> P4 Switch -> AP Agent -> hostapd_cli -> Station disconnected
 #
 # Usage:
 #   ./demo_launcher.sh              # Smart mode (auto-detects if P4 needs recompilation)
@@ -23,6 +28,7 @@ MININET_PID_FILE="/tmp/widd_mininet.pid"
 TERM_MININET="80x25+0+0"         # Top-left: Mininet Network
 TERM_CONTROLLER="120x30+100+370"    # Bottom-left: OODA Controller
 TERM_ATTACKER="80x25+950+0"      # Top-right: Attack CLI
+TERM_AP_AGENT="80x25+950+370"    # Bottom-right: AP Agent
 
 # XTerm colors and fonts - all terminals use the same settings
 XTERM_OPTS="-fa 'Monospace' -fs 7 -bg black -fg white"
@@ -36,6 +42,7 @@ cleanup() {
     # Kill Python processes
     pkill -f "start_server" 2>/dev/null || true
     pkill -f "interactive_attack" 2>/dev/null || true
+    pkill -f "ap_agent" 2>/dev/null || true
 
     # Clean up Mininet network
     echo "[*] Stopping Mininet network..."
@@ -200,6 +207,27 @@ launch_attacker() {
     echo "[+] Attack CLI launched (sending frames via $ATTACK_IFACE)"
 }
 
+launch_ap_agent() {
+    echo "[*] Launching AP Agent (receives commands from controller)..."
+
+    # The AP Agent listens on the AP's eth interface for frames from P4 switch
+    # These interfaces are in the root namespace where Mininet runs
+    AP_ETH_IFACE="ap1-eth2"
+    AP_WLAN_IFACE="ap1-wlan1"
+
+    echo "[*] AP Agent interfaces: eth=$AP_ETH_IFACE, wlan=$AP_WLAN_IFACE"
+
+    # Run AP Agent in root namespace (same as Mininet/Controller)
+    # The AP interfaces are visible from root namespace
+    xterm -title "WIDD-AP-Agent" \
+          -geometry $TERM_AP_AGENT \
+          $XTERM_OPTS \
+          -e "cd $PROJECT_DIR && sudo python3 ap_agent.py --interface $AP_ETH_IFACE --wlan $AP_WLAN_IFACE; read -p 'Press Enter to close...'" &
+
+    sleep 2
+    echo "[+] AP Agent launched (listening on $AP_ETH_IFACE)"
+}
+
 
 check_prerequisites() {
     echo "[*] Checking prerequisites..."
@@ -277,14 +305,24 @@ main() {
     echo "[*] Waiting for OODA Controller to initialize (3 seconds)..."
     sleep 3
 
+    # Launch AP Agent (receives Packet-Out from controller and executes deauth)
+    launch_ap_agent
+
+    # Give AP Agent time to start
+    echo "[*] Waiting for AP Agent to initialize (2 seconds)..."
+    sleep 2
+
     # Launch attack terminal
     launch_attacker
-  
 
     echo ""
     echo "========================================"
     echo "  All components launched!"
     echo "========================================"
+    echo ""
+    echo "  Flow: Attacker -> AP -> P4 Switch -> Controller"
+    echo "        Controller -> P4 Switch -> AP Agent -> hostapd (deauth)"
+    echo ""
     echo "Press Ctrl+C to stop all components."
     echo ""
 

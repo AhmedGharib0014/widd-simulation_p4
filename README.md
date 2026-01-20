@@ -59,8 +59,9 @@ widd/
 │   ├── README.md             # Architecture documentation
 │   ├── component_diagram.puml
 │   └── architecture_uml.puml
-├── demo_launcher.sh          # Multi-terminal demo script
+├── demo_launcher.sh          # Multi-terminal demo script (4 terminals)
 ├── start_server.py           # OODA Controller server entry point
+├── ap_agent.py               # AP Agent - executes controller decisions
 └── interactive_attack.py     # Interactive attack CLI
 ```
 
@@ -154,7 +155,18 @@ Virtual wireless network with:
 │  4. PACKET-OUT (Forward legitimate frames)                       │
 │                                                                  │
 │     Controller ──(CPU header + raw 802.11)──► s1-cpu-h           │
-│     P4 switch forwards to destination port                       │
+│     P4 switch forwards to port 1 (AP eth interface)              │
+└──────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  5. AP AGENT (Execute deauthentication)                          │
+│                                                                  │
+│     ap1-eth2 ──(sniff)──► AP Agent ──(hostapd_cli)──► Station   │
+│     - Receives 802.11 management frame from P4 switch            │
+│     - Parses frame to extract target station MAC                 │
+│     - Executes: hostapd_cli -i ap1-wlan1 deauthenticate <MAC>   │
+│     - Station is actually disconnected from the network          │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
